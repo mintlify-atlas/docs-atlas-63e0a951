@@ -1,0 +1,191 @@
+---
+title: "CookieJar — Scramjet Cookie Management API"
+sidebarTitle: "CookieJar"
+description: "API reference for CookieJar, which manages cookies across proxied origins, including setCookies(), getCookies(), dump(), load(), and clear()."
+---
+
+`CookieJar` is the cookie storage engine that powers cross-origin cookie sandboxing inside Scramjet. Because all proxied origins are served from the same actual browser origin, the browser's native cookie jar would conflate cookies across all sites. `CookieJar` replaces it with a fully software-managed store that enforces domain matching, path matching, expiry, `HttpOnly`, `SameSite`, and the `__Secure-` / `__Host-` cookie prefixes — all inside the service worker, invisible to the page.
+
+Every `Controller` instance owns exactly one `CookieJar`, shared across every `Frame` it manages. You access it via `controller.cookieJar`.
+
+## Import
+
+```ts
+import type { CookieJar } from '@mercuryworkshop/scramjet';
+
+const cookieJar = controller.cookieJar;
+```
+
+<Note>
+  You rarely need to call `CookieJar` methods directly. The Scramjet fetch pipeline calls `setCookies` and `getCookies` automatically on every proxied request and response. Use the methods below when you need to inspect, pre-seed, persist, or reset cookie state.
+</Note>
+
+## The `Cookie` type
+
+```ts
+type Cookie = {
+  name: string;
+  value: string;
+  path?: string;
+  expires?: number;       // milliseconds since epoch
+  maxAge?: number;        // seconds; used during parsing, converted to expires
+  domain?: string;        // always stored with a leading dot internally
+  hostOnly?: boolean;     // true when no Domain attribute was set
+  secure?: boolean;
+  httpOnly?: boolean;
+  sameSite?: string;      // 'strict' | 'lax' | 'none' (case-insensitive)
+};
+```
+
+## Methods
+
+### `setCookies(cookieString, url)`
+
+Parses a `Set-Cookie` header value (or a sequence of such values), applies RFC 6265 validation rules, and stores the resulting cookies.
+
+```ts
+cookieJar.setCookies(cookieString: string, url: URL): void
+```
+
+<ParamField body="cookieString" type="string" required>
+  The raw value of one or more `Set-Cookie` headers concatenated as a single string. The parser handles both single-value and multi-value inputs.
+</ParamField>
+
+<ParamField body="url" type="URL" required>
+  The URL of the response that produced the `Set-Cookie` header. Used to compute the default domain, default path, and to validate `__Secure-` / `__Host-` cookie prefixes.
+</ParamField>
+
+The method enforces the following rules before storing a cookie:
+
+| Rule | Effect |
+|---|---|
+| `__Secure-` prefix | Cookie dropped if `Secure` attribute is absent |
+| `__Host-` prefix | Cookie dropped if `Secure` absent, `Domain` present, or `Path` is not `/` |
+| `Max-Age <= 0` | Existing cookie with the same identity is deleted |
+| No `Domain` attribute | Cookie stored as host-only for `url.hostname` |
+| No `Path` attribute | Path defaults to the directory portion of `url.pathname` |
+| No `SameSite` attribute | Defaults to `'lax'` |
+
+### `getCookies(url, fromJs, sameSiteContext?)`
+
+Returns the `Cookie` header string for the given URL, applying domain matching, path matching, expiry, `HttpOnly`, and `SameSite` filtering.
+
+```ts
+cookieJar.getCookies(
+  url: URL,
+  fromJs: boolean,
+  sameSiteContext?: 'strict' | 'lax' | 'cross-site'
+): string
+```
+
+<ParamField body="url" type="URL" required>
+  The URL of the outgoing request. Domain suffix matching walks up the hostname chain (e.g. `sub.example.com` also matches cookies for `.example.com`).
+</ParamField>
+
+<ParamField body="fromJs" type="boolean" required>
+  Set to `true` when the cookie access originates from JavaScript (e.g. `document.cookie` reads). `HttpOnly` cookies are excluded when this is `true`.
+</ParamField>
+
+<ParamField body="sameSiteContext" type="'strict' | 'lax' | 'cross-site'" optional>
+  The SameSite enforcement context for the request. Defaults to `'strict'`.
+
+  | Value | Behaviour |
+  |---|---|
+  | `'strict'` | All non-expired, path/domain-matching cookies are included |
+  | `'lax'` | `SameSite=Strict` cookies are excluded; `Lax` and `None` are included |
+  | `'cross-site'` | Only `SameSite=None` cookies are included |
+</ParamField>
+
+<ResponseField name="returns" type="string">
+  A semicolon-separated cookie string ready to be sent as the `Cookie` request header, e.g. `"session=abc123; theme=dark"`. Returns an empty string when no matching cookies exist.
+</ResponseField>
+
+### `dump()`
+
+Serializes the entire cookie store to a JSON string for persistence.
+
+```ts
+cookieJar.dump(): string
+```
+
+<ResponseField name="returns" type="string">
+  A JSON-encoded string representing the internal cookie map, keyed by cookie identity strings of the form `domain@path@name`. Pass the returned value to `load()` to restore state.
+</ResponseField>
+
+### `load(serialized)`
+
+Replaces the current cookie store with the contents of a previously `dump()`-ed string.
+
+```ts
+cookieJar.load(serialized: string): void
+```
+
+<ParamField body="serialized" type="string" required>
+  A JSON string previously returned by `dump()`. The method fully replaces `cookies` and rebuilds the domain index from scratch. Cookies whose `expires` field was stored as a date string are automatically converted back to a millisecond timestamp.
+</ParamField>
+
+<Warning>
+  Calling `load()` discards all cookies currently in memory. If you want to merge cookies from a previous session without losing in-flight cookies, call `dump()` first, merge the JSON externally, and pass the merged result to `load()`.
+</Warning>
+
+### `clear()`
+
+Removes all cookies from the in-memory store.
+
+```ts
+cookieJar.clear(): void
+```
+
+This method only clears the in-memory state. To also remove the persisted copy in IndexedDB, follow the call with `await controller.persistCookies()`.
+
+---
+
+## Persistence and cross-tab sync
+
+<Note>
+  Use `controller.persistCookies()` to save the current `CookieJar` state to IndexedDB. Calling `cookieJar.dump()` alone does **not** write to storage — it only produces a string you can pass to `load()` or store yourself.
+</Note>
+
+Scramjet stores cookies in the `__scramjet_controller` IndexedDB database, under the `state` object store. Changes are broadcast to other tabs via the `__scramjet_controller_channel` BroadcastChannel so that all tabs sharing a controller origin see consistent cookie state.
+
+<Tip>
+  To fully reset a proxied session (equivalent to "clear cookies and restart"), call `controller.cookieJar.clear()` followed by `await controller.persistCookies()`. This wipes both the in-memory store and the IndexedDB record, and broadcasts the change to any other open tabs.
+</Tip>
+
+---
+
+## Example
+
+```ts
+// Access via the controller
+const cookieJar = controller.cookieJar;
+
+// Get cookies for a URL (used when making proxied requests)
+const cookies = cookieJar.getCookies(
+  new URL('https://example.com/app/'),
+  false,        // not a JS access
+  'strict'      // same-site context
+);
+// → 'session=abc123; theme=dark'
+
+// Manually set a cookie (e.g. to pre-seed authentication)
+cookieJar.setCookies(
+  'session=abc123; Path=/; Secure; HttpOnly; SameSite=Lax',
+  new URL('https://example.com')
+);
+
+// Dump for manual persistence
+const serialized = cookieJar.dump();
+localStorage.setItem('cookies_backup', serialized);
+
+// Restore from a backup
+const backup = localStorage.getItem('cookies_backup');
+if (backup) cookieJar.load(backup);
+
+// Persist to IndexedDB (preferred)
+await controller.persistCookies();
+
+// Clear all cookies and persist the empty state
+cookieJar.clear();
+await controller.persistCookies();
+```

@@ -1,47 +1,223 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Scramjet in Under 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Scaffold a Scramjet proxy app with create-proxy-app, start a local dev server, and browse the web through Scramjet in under 5 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+The fastest way to get a Scramjet proxy running is with the `create-proxy-app` CLI. It generates a fully wired project — server entry point, static frontend, and all required package dependencies — in a single interactive command. By the end of this guide you will have a local server on port `3030` that proxies arbitrary web content through Scramjet.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Note>
+  Scramjet is currently in alpha. Pin to a specific major version (e.g. `@mercuryworkshop/proxy-bootstrap@^0`) in production deployments to prevent unexpected breaking changes from auto-upgrades.
+</Note>
 
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+## Using create-proxy-app (Recommended)
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Check Prerequisites">
+    Make sure you have **Node.js 18 or newer** installed. Any of the following package managers work:
 
     ```bash
-    npm install your-package
+    node --version   # must be >= 18
+    ```
+
+    `create-proxy-app` is compatible with npm, pnpm, yarn, and bun. The examples below use npm, but the CLI will prompt you to choose your preferred manager during setup.
+  </Step>
+
+  <Step title="Scaffold the Project">
+    Run the scaffolding CLI with `npx`. You can pass the project directory as a positional argument. The CLI will guide you through the remaining options interactively.
+
+    ```bash
+    npx create-proxy-app my-proxy
+    ```
+
+    **Available flags:**
+
+    | Flag | Description |
+    |---|---|
+    | `--git` | Initialise a Git repository and create an initial commit automatically |
+    | `--install` | Install dependencies immediately after scaffolding (prompts for package manager) |
+    | `-y` / `--default` | Skip all prompts and scaffold with default options |
+
+    **Non-interactive (CI) example:**
+
+    ```bash
+    npx create-proxy-app my-proxy --git --install -y
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Install Dependencies">
+    If you did not pass `--install`, change into the project directory and install dependencies manually:
 
     ```bash
-    your-cli init
+    cd my-proxy
+    npm install
+    ```
+
+    The template's `package.json` pulls in `express` and `@mercuryworkshop/proxy-bootstrap`. The bootstrap package downloads the correct pinned versions of the Scramjet runtime, controller, and WASM binary from npm at server start — no separate build step is required.
+  </Step>
+
+  <Step title="Start the Dev Server">
+    ```bash
+    npm run dev
+    ```
+
+    The server listens on **http://localhost:3030**. On first start, `proxy-bootstrap` fetches the pinned Scramjet packages from the npm registry and caches them in `.downloads/` next to `server.js`. Subsequent starts reuse the cache and boot instantly.
+
+    You should see output similar to:
+
+    ```
+    Found downloaded Scramjet Controller version: 0.0.14
+    Scramjet Controller is up to date (version: 0.0.14), skipping download.
+    Server is running on port 3030
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
-    ```
+  <Step title="Browse the Web Through Scramjet">
+    Open **http://localhost:3030** in your browser. Type any URL into the address bar — for example `https://google.com` — and press Enter. Scramjet will proxy the page inside an `<iframe>` on the page.
+
+    <Tip>
+      If the URL does not start with `http`, the frontend automatically prepends `https://` for you.
+    </Tip>
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Generated Server File
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+The scaffolded `server.js` is minimal by design. `bootstrap()` handles all asset serving and Wisp WebSocket routing automatically:
+
+```js server.js
+import http from 'node:http';
+import express from 'express';
+import { bootstrap } from '@mercuryworkshop/proxy-bootstrap';
+
+const { routeRequest, routeUpgrade } = await bootstrap();
+
+const app = express();
+app.use((req, res, next) => {
+  if (routeRequest(req, res)) return;
+  next();
+});
+app.use(express.static('public'));
+
+const server = http.createServer(app);
+server.on('upgrade', routeUpgrade);
+server.listen(3030, () => console.log('Server is running on port 3030'));
+```
+
+`routeRequest` intercepts requests for Scramjet assets (the JS bundle, WASM binary, controller scripts, and the Service Worker entry point). `routeUpgrade` routes WebSocket upgrade requests to the built-in Wisp server used by the transport layer.
+
+## Client-Side Initialisation
+
+The template's `public/index.js` shows how to wire up the `Controller` and `Frame` on the client:
+
+```js public/index.js
+// initBootstrap() is injected by the server at /bootstrap-init.js
+// It registers the Service Worker and returns a Controller instance.
+const controller = await initBootstrap();
+
+// Built-in plugins from @mercuryworkshop/scramjet-utils
+const cachePlugin    = new $scramjetUtils.HttpCachePlugin();
+const urlWatcher     = new $scramjetUtils.UrlWatcherPlugin((url) => {
+  frameUrl.textContent = url;
+});
+const catchEscaped   = new $scramjetUtils.CatchEscapedLinksPlugin(
+  (url) => new URL(`/?goto=${encodeURIComponent(url.href)}`, location.origin)
+);
+
+// Create a Frame backed by an existing <iframe> element
+const frame = controller.createFrame(frameElement, {
+  plugins: [cachePlugin, urlWatcher, catchEscaped],
+});
+
+// Navigate to a URL
+await frame.go('https://example.com');
+```
+
+## Manual Setup (Without create-proxy-app)
+
+If you prefer to integrate Scramjet into an existing project, install the packages directly.
+
+### Install Server Package
+
+<CodeGroup>
+
+```bash npm
+npm install @mercuryworkshop/proxy-bootstrap
+```
+
+```bash pnpm
+pnpm add @mercuryworkshop/proxy-bootstrap
+```
+
+```bash yarn
+yarn add @mercuryworkshop/proxy-bootstrap
+```
+
+```bash bun
+bun add @mercuryworkshop/proxy-bootstrap
+```
+
+</CodeGroup>
+
+### Install Client Packages
+
+The following packages are only needed if you are building your own client-side integration (i.e., not using the auto-served bundles from `proxy-bootstrap`):
+
+<CodeGroup>
+
+```bash npm
+npm install @mercuryworkshop/scramjet \
+            @mercuryworkshop/scramjet-controller \
+            @mercuryworkshop/scramjet-utils
+```
+
+```bash pnpm
+pnpm add @mercuryworkshop/scramjet \
+         @mercuryworkshop/scramjet-controller \
+         @mercuryworkshop/scramjet-utils
+```
+
+```bash yarn
+yarn add @mercuryworkshop/scramjet \
+         @mercuryworkshop/scramjet-controller \
+         @mercuryworkshop/scramjet-utils
+```
+
+```bash bun
+bun add @mercuryworkshop/scramjet \
+        @mercuryworkshop/scramjet-controller \
+        @mercuryworkshop/scramjet-utils
+```
+
+</CodeGroup>
+
+<Warning>
+  When integrating manually you are responsible for serving the WASM binary, the Scramjet JS bundle, and the controller scripts at the correct paths. Using `@mercuryworkshop/proxy-bootstrap` on the server side handles this automatically and is strongly recommended.
+</Warning>
+
+## Transport Options
+
+`proxy-bootstrap` supports two transport backends. Pass a `transport` option to `bootstrap()` to switch:
+
+<Tabs>
+  <Tab title="libcurl (default)">
+    ```js
+    const { routeRequest, routeUpgrade } = await bootstrap({
+      transport: 'libcurl', // default — no extra config needed
+    });
+    ```
+
+    Uses the `@mercuryworkshop/libcurl-transport` package. Powered by a WASM build of libcurl. Good general-purpose default with broad protocol support.
+  </Tab>
+  <Tab title="epoxy">
+    ```js
+    const { routeRequest, routeUpgrade } = await bootstrap({
+      transport: 'epoxy',
+    });
+    ```
+
+    Uses the `@mercuryworkshop/epoxy-transport` package. An alternative WASM transport with different performance and compatibility tradeoffs.
+  </Tab>
+</Tabs>
+
+Both transports tunnel traffic over a Wisp WebSocket connection to the server, which means your Node.js server is the only origin that makes real outbound HTTP requests.

@@ -1,0 +1,229 @@
+---
+title: "ScramjetConfig and ScramjetFlags Type Reference"
+sidebarTitle: "ScramjetConfig"
+description: "Complete type reference for ScramjetConfig, ScramjetFlags, and ScramjetVersionInfo, including all rewriter flags and their default values."
+---
+
+`ScramjetConfig` is the top-level configuration object that controls how the Scramjet rewriter transforms proxied pages. It covers everything from the internal global function names used in rewritten code, to per-site flag overrides, to the set of boolean feature flags that toggle individual rewriting behaviors. Understanding these options lets you tune Scramjet for your production environment or enable additional debugging tools during development.
+
+## Import
+
+```ts
+import {
+  defaultConfig,
+  defaultConfigDev,
+  type ScramjetConfig,
+  type ScramjetFlags,
+  type ScramjetVersionInfo,
+} from '@mercuryworkshop/scramjet';
+```
+
+`defaultConfig` and `defaultConfigDev` are exported constants you can spread or pass directly into `new Controller({ scramjetConfig: ... })`.
+
+---
+
+## `ScramjetVersionInfo`
+
+Version metadata injected at build time. Available on the exported `versionInfo` constant.
+
+<ResponseField name="version" type="string">
+  The semantic version string of the Scramjet build, e.g. `"1.4.0"`.
+</ResponseField>
+
+<ResponseField name="build" type="string">
+  The full git commit hash that this build was produced from. Useful for correlating bug reports to exact source revisions.
+</ResponseField>
+
+<ResponseField name="date" type="string">
+  The ISO 8601 build date string, injected at compile time.
+</ResponseField>
+
+```ts
+import { versionInfo } from '@mercuryworkshop/scramjet';
+console.log(versionInfo.version); // e.g. "1.4.0"
+console.log(versionInfo.build);   // e.g. "a3f2b91..."
+```
+
+---
+
+## `ScramjetConfig`
+
+<ResponseField name="globals" type="object">
+  A map of internal rewriter identifier names injected into rewritten JavaScript. These names must be unique strings that will not collide with the proxied page's own globals. Changing them lets you fingerprint-proof or obfuscate the proxy.
+
+  <Expandable title="globals fields">
+    <ResponseField name="wrapfn" type="string" default='"$scramjet$wrap"'>
+      Name of the function that wraps property accesses to intercept and proxy them.
+    </ResponseField>
+    <ResponseField name="wrappropertybase" type="string" default='"$scramjet__"'>
+      Prefix used for generated property wrapper base identifiers.
+    </ResponseField>
+    <ResponseField name="wrappropertyfn" type="string" default='"$scramjet$prop"'>
+      Name of the property descriptor wrapper function.
+    </ResponseField>
+    <ResponseField name="cleanrestfn" type="string" default='"$scramjet$clean"'>
+      Name of the function that strips proxy wrappers from rest parameters.
+    </ResponseField>
+    <ResponseField name="importfn" type="string" default='"$scramjet$import"'>
+      Name of the function that rewrites dynamic `import()` calls.
+    </ResponseField>
+    <ResponseField name="rewritefn" type="string" default='"$scramjet$rewrite"'>
+      Name of the general URL-rewriting function used throughout rewritten code.
+    </ResponseField>
+    <ResponseField name="metafn" type="string" default='"$scramjet$meta"'>
+      Name of the function that returns the proxied `import.meta` object.
+    </ResponseField>
+    <ResponseField name="wrappostmessagefn" type="string" default='"$scramjet$wrappostmessage"'>
+      Name of the function that rewrites `postMessage` payloads.
+    </ResponseField>
+    <ResponseField name="pushsourcemapfn" type="string" default='"$scramjet$pushsourcemap"'>
+      Name of the function that registers source maps generated during rewriting.
+    </ResponseField>
+    <ResponseField name="trysetfn" type="string" default='"$scramjet$tryset"'>
+      Name of the function that safely performs property assignments that may throw in strict mode.
+    </ResponseField>
+    <ResponseField name="templocid" type="string" default='"$scramjet$temploc"'>
+      Temporary variable name used to hold location references during rewriting.
+    </ResponseField>
+    <ResponseField name="tempunusedid" type="string" default='"$scramjet$tempunused"'>
+      Temporary variable name used as a placeholder for unused destructuring targets.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="flags" type="ScramjetFlags">
+  Boolean feature flags that control rewriting behavior. See the [`ScramjetFlags`](#scramjetflags) reference below for all options and their defaults.
+</ResponseField>
+
+<ResponseField name="siteFlags" type='Record<string, Partial<ScramjetFlags>>'>
+  A map of URL pattern strings (used as `RegExp` sources) to partial flag overrides. When a request URL matches a pattern key, the corresponding flags take precedence over the global `flags` for that request only. Useful for enabling aggressive compatibility fixes on specific problem sites while leaving defaults intact everywhere else.
+
+  ```ts
+  scramjetConfig: {
+    siteFlags: {
+      // Enable syncXHR only on legacy sites that require it
+      'example\\.com': { syncxhr: true },
+      // Disable sourcemaps on high-traffic domains to reduce overhead
+      'cdn\\.example\\.org': { sourcemaps: false },
+    },
+  }
+  ```
+</ResponseField>
+
+<ResponseField name="maskedfiles" type="string[]">
+  An array of filename strings. Requests whose path ends with one of these names are served directly without proxying. The controller adds `"inject.js"` and `"scramjet.wasm.js"` to this list by default so that its own bootstrap scripts are never rewritten.
+</ResponseField>
+
+---
+
+## `ScramjetFlags`
+
+All thirteen feature flags are `boolean`. The table below lists each flag, its default value in `defaultConfig`, and its purpose.
+
+<ParamField body="syncxhr" type="boolean" default="false">
+  Enables rewriting of synchronous `XMLHttpRequest` calls. Disabled by default because synchronous XHR blocks the main thread and is rarely needed. Enable only when a target site depends on it.
+</ParamField>
+
+<ParamField body="disableComputedWrap" type="boolean" default="false">
+  Disables the computed property access wrapper (`wrapfn`). When `true`, computed accesses like `obj[key]` are no longer rewritten. Can improve performance on sites where computed wrapping causes issues, at the cost of reduced proxy fidelity.
+</ParamField>
+
+<ParamField body="rewriterLogs" type="boolean" default="false">
+  Enables verbose logging from the JavaScript rewriter. When `true`, the rewriter outputs detailed messages about each transformation it applies. Very noisy — only useful when debugging rewriting issues.
+</ParamField>
+
+<ParamField body="captureErrors" type="boolean" default="false">
+  Wraps all rewritten code in `try/catch` blocks so that JavaScript errors inside proxied pages are caught and forwarded to Scramjet's error handling rather than crashing the page. Enabled in `defaultConfigDev` to surface bugs during development.
+</ParamField>
+
+<ParamField body="cleanErrors" type="boolean" default="false">
+  When `captureErrors` is active, strips Scramjet's internal stack frames from caught errors before displaying them. Produces cleaner error messages in the browser console but hides proxy-level context. Disabled in `defaultConfigDev` to preserve full stack traces.
+</ParamField>
+
+<ParamField body="scramitize" type="boolean" default="false">
+  Enables experimental hardening that attempts to prevent proxied pages from escaping the proxy sandbox. Not yet production-ready — enable only for testing.
+</ParamField>
+
+<ParamField body="sourcemaps" type="boolean" default="true">
+  Generates source maps for all rewritten JavaScript files. Source maps let browser DevTools show the original unmodified source instead of rewritten code, greatly improving debuggability of proxied pages. Carries a small performance overhead; disable in latency-sensitive production deployments.
+</ParamField>
+
+<ParamField body="destructureRewrites" type="boolean" default="true">
+  Enables rewriting of destructuring assignment patterns. When `true`, destructuring like `const { location } = window` is rewritten so that `location` refers to the proxied location object. Disabling this can cause subtle breakage on pages that rely on destructured globals.
+</ParamField>
+
+<ParamField body="allowInvalidJs" type="boolean" default="true">
+  Allows the rewriter to attempt rewriting JavaScript that does not fully parse as valid ES syntax. Many real-world pages contain minor syntax quirks; setting this to `false` causes the rewriter to fall through to serving the original source unchanged when parsing fails. Set to `false` in `defaultConfigDev` to surface parse errors during development.
+</ParamField>
+
+<ParamField body="allowFailedIntercepts" type="boolean" default="false">
+  When `true`, requests that encounter an error inside the Scramjet intercept layer fall back to a direct fetch rather than surfacing an error to the page. The controller overrides this to `true` by default to improve resilience in production.
+</ParamField>
+
+<ParamField body="debugTrampolines" type="boolean" default="false">
+  Emits named trampoline functions in rewritten code instead of anonymous wrappers. This makes stack traces far more readable when investigating rewriter-level call chains. Enabled in `defaultConfigDev`. Do not use in production as it increases code size.
+</ParamField>
+
+<ParamField body="debugSourceURL" type="boolean" default="false">
+  Appends `//# sourceURL=` comments to all rewritten scripts so that browsers assign them readable names in the DevTools Sources panel. Enabled in `defaultConfigDev`. Adds minor overhead; disable in production.
+</ParamField>
+
+<ParamField body="encapsulateWorkers" type="boolean" default="true">
+  Wraps Worker and SharedWorker scripts in a Scramjet bootstrapper so they run inside the proxy context rather than the bare browser environment. Disabling this breaks sites that rely on workers accessing proxied APIs, but can be useful for debugging worker-specific issues.
+</ParamField>
+
+---
+
+## `defaultConfig` vs `defaultConfigDev`
+
+<CodeGroup>
+```ts defaultConfig (production)
+import { defaultConfig } from '@mercuryworkshop/scramjet';
+
+// Key production defaults:
+// sourcemaps: true      — readable DevTools sources
+// captureErrors: false  — no error wrapping overhead
+// allowInvalidJs: true  — tolerant of quirky page JS
+// debugTrampolines: false
+// debugSourceURL: false
+// encapsulateWorkers: true
+```
+
+```ts defaultConfigDev (development)
+import { defaultConfigDev } from '@mercuryworkshop/scramjet';
+
+// Changed from defaultConfig:
+// captureErrors: true     — errors are caught and reported
+// debugTrampolines: true  — named wrappers in stack traces
+// debugSourceURL: true    — sourceURL comments in DevTools
+// allowInvalidJs: false   — parse errors surface immediately
+// rewriterLogs: false     — still disabled; enable manually if needed
+```
+</CodeGroup>
+
+### Passing config to a Controller
+
+```ts
+import { Controller } from '@mercuryworkshop/scramjet-controller';
+import { defaultConfigDev } from '@mercuryworkshop/scramjet';
+
+const controller = new Controller({
+  serviceworker: sw.active!,
+  transport,
+  scramjetConfig: {
+    ...defaultConfigDev,
+    flags: {
+      ...defaultConfigDev.flags,
+      // Override a single flag on top of the dev config
+      rewriterLogs: true,
+    },
+    siteFlags: {
+      'legacy-app\\.internal': { syncxhr: true },
+    },
+  },
+});
+```
+
+<Note>
+  `ScramjetConfig` is deeply merged inside the `Controller` constructor using `@fastify/deepmerge`, so you only need to specify the fields you want to override. Partial objects at any nesting level are safe to pass.
+</Note>

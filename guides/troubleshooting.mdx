@@ -1,0 +1,278 @@
+---
+title: 'Troubleshooting Common Scramjet Proxy Issues'
+sidebarTitle: 'Troubleshooting'
+description: 'Diagnose and fix common Scramjet issues including service worker problems, WASM loading failures, broken sites, and transport connection errors.'
+---
+
+Most Scramjet problems fall into one of a small number of categories: incorrect static file serving, misconfigured paths, missing service worker scope, or a site-specific JavaScript pattern that the rewriter does not yet handle. This page walks through each category with concrete diagnostics and fixes. When debugging, always check **two separate console contexts** — the main page DevTools console and the Service Worker console — because errors from the rewriter and transport surface in the SW context, not the page context.
+
+<Note>
+  Open the Service Worker console in Chrome/Edge via **DevTools → Application →
+  Service Workers → your SW → "inspect"**. In Firefox, navigate to
+  `about:debugging#/runtime/this-firefox` and click **Inspect** next to the
+  registered worker. Many Scramjet errors are only visible in the SW console and
+  will not appear on the main page.
+</Note>
+
+---
+
+## Common issues
+
+<Accordion title="Service worker not registering">
+  The service worker must be reachable, correctly typed, and scoped to cover the
+  proxy prefix.
+
+  **Checklist:**
+
+  - Verify that the SW script (`swPath`, default `/sw.js`) is served with
+    `Content-Type: application/javascript`. Browsers silently reject service
+    workers with incorrect MIME types.
+  - The SW registration scope must cover the entire `prefix` path. If your
+    prefix is `/proxy/`, register the SW with
+    `{ scope: '/proxy/' }` (or a broader scope like `/`).
+  - If your deployment uses WebSockets for the transport, ensure that
+    `routeUpgrade` is wired into your HTTP server so that WebSocket upgrade
+    requests are forwarded to the Wisp backend rather than rejected at the HTTP
+    layer.
+  - Check for a `SecurityError` in the browser console — this usually means the
+    page is not served over HTTPS (or `localhost`), which is required for
+    service worker registration.
+
+  ```ts
+  // Correct registration — scope must cover the prefix
+  const reg = await navigator.serviceWorker.register('/sw.js', {
+    scope: '/',
+  });
+  ```
+</Accordion>
+
+<Accordion title="WASM not loading">
+  The WebAssembly rewriter binary must be served with the right content type and
+  its configured path must match what the controller expects.
+
+  **Checklist:**
+
+  - `scramjet.wasm` (default path `/scramjet/scramjet.wasm`) **must** be served
+    with `Content-Type: application/wasm`. Serving it as
+    `application/octet-stream` will cause `WebAssembly.instantiate` to reject
+    the response with a MIME type error in strict contexts.
+  - Confirm that `wasmPath` in the Controller `config` matches the actual URL
+    path where the file is served. A mismatch causes a 404 and the controller's
+    `wait()` promise will never resolve.
+  - Check `scramjetWasmPath` / `scramjetBundlePath` in your `BootstrapOptions`
+    if you are using `@mercuryworkshop/scramjet-bootstrap` — those paths must
+    also align with your static file layout.
+  - Open the **Network** tab in DevTools and filter by `scramjet.wasm`. Look for
+    a non-200 status or a CORS error on the WASM fetch.
+  - For `WebAssembly.instantiate` errors logged in the SW console, the most
+    common cause is a truncated or corrupted WASM file — verify the file size
+    matches the build artifact.
+</Accordion>
+
+<Accordion title="Transport connection failing">
+  The transport layer (Wisp/epoxy or libcurl) connects to a backend WebSocket
+  server. If that connection fails, all proxied fetches will fail silently or
+  throw network errors.
+
+  **Checklist:**
+
+  - Verify that your Wisp WebSocket server is running. If you are using
+    `@mercuryworkshop/scramjet-bootstrap`, the bootstrap server starts a Wisp
+    endpoint automatically — confirm the process is running and not crashing on
+    startup.
+  - `wispPath` in `BootstrapOptions` (default `/wisp/`) must match the route
+    that the server is listening on. A mismatch causes the WebSocket upgrade to
+    return a 404.
+  - Open **DevTools → Network → WS** and look for the WebSocket upgrade request
+    to your Wisp path. A 101 status means the handshake succeeded; a 404 or 403
+    indicates a routing problem.
+  - For libcurl transport: the libcurl WASM binary must also load successfully.
+    Check for a failed fetch of `libcurl-client.js` or the associated WASM file
+    in the network log.
+  - If you see `ERR_CONNECTION_REFUSED`, the backend server is not reachable at
+    the configured host/port. Confirm the server is bound to the correct
+    interface and not blocked by a firewall or reverse-proxy misconfiguration.
+</Accordion>
+
+<Accordion title="Site not loading correctly">
+  A proxied site may show a blank page, partial content, or throw JavaScript
+  errors if the rewriter does not handle some pattern the site uses.
+
+  **Steps to diagnose:**
+
+  <Steps>
+    <Step title="Enable diagnostic flags">
+      Set `captureErrors: true` and `rewriterLogs: true` in `scramjetConfig.flags`.
+      This prevents rewriter errors from crashing the page and logs every rewrite
+      operation to the SW console.
+
+      ```ts
+      scramjetConfig: {
+        flags: {
+          captureErrors: true,
+          rewriterLogs: true,
+        },
+      }
+      ```
+    </Step>
+    <Step title="Try allowFailedIntercepts">
+      Some sites aggressively probe browser APIs to detect proxies. Setting
+      `allowFailedIntercepts: true` prevents a failing intercept hook from
+      propagating as an uncaught error, which can unblock the page.
+    </Step>
+    <Step title="Apply siteFlags overrides">
+      If the issue is isolated to a single domain, use `siteFlags` to target
+      the override. Common fixes include disabling `encapsulateWorkers` for sites
+      with complex worker topologies and enabling `syncxhr` for legacy libraries.
+
+      ```ts
+      siteFlags: {
+        'example\\.com': {
+          encapsulateWorkers: false,
+          allowFailedIntercepts: true,
+        },
+      }
+      ```
+    </Step>
+    <Step title="Check response headers">
+      Some sites send `X-Frame-Options: DENY` or a CSP `frame-ancestors 'none'`
+      header. These headers prevent the proxied page from being embedded in an
+      iframe. The Scramjet fetch handler strips many security headers, but verify
+      in the SW console that the response headers are being correctly rewritten
+      before they reach the browser.
+    </Step>
+  </Steps>
+</Accordion>
+
+<Accordion title="Cookies not persisting">
+  Scramjet manages cookies in IndexedDB under the database name
+  `__scramjet_controller`, separate from the browser's native cookie store.
+
+  **Checklist:**
+
+  - Open **DevTools → Application → IndexedDB** and confirm the
+    `__scramjet_controller` database exists and contains a `state` object store.
+    If it is missing, the `CookieJar` may not be initializing correctly.
+  - Look for IndexedDB errors in the main-page console — quota exceeded or
+    private-browsing restrictions can silently prevent writes.
+  - The controller uses a `BroadcastChannel` (`__scramjet_controller_channel`)
+    to sync cookie state across tabs. If cookies are inconsistent between tabs,
+    confirm that `BroadcastChannel` is not blocked by the browser (some privacy
+    extensions disable it).
+  - `SameSite=Strict` cookies from the origin site may not propagate correctly
+    through the cross-origin proxy sandbox. This is a browser-level restriction
+    and cannot be fully worked around without server-side cookie injection.
+</Accordion>
+
+<Accordion title="controller.wait() never resolves">
+  `controller.wait()` resolves only after the service worker sends a `ready`
+  message **and** the WASM binary finishes loading. If either step stalls, the
+  promise hangs indefinitely.
+
+  **Checklist:**
+
+  - Confirm the SW script imports and calls the Scramjet controller handler.
+    The SW must send a `ready` RPC message back to the controller tab channel
+    when it initializes. If the SW script is incorrect or not executing the
+    Scramjet bootstrap code, the ready message is never sent.
+  - Verify `scramjetControllerSwPath` (default `/controller/controller.sw.js`)
+    is correctly served and accessible. A 404 here means the SW boots without
+    the Scramjet handler code.
+  - Check for JavaScript errors in the **Service Worker console** (Application →
+    Service Workers → Inspect). A runtime error during SW initialization will
+    prevent the ready message from being sent without any visible error on the
+    main page.
+  - The WASM load (fetching `wasmPath`) is part of the `wait()` condition. A
+    slow or failing WASM fetch can stall the promise even if the SW is healthy —
+    see the [WASM not loading](#wasm-not-loading) section above.
+</Accordion>
+
+<Accordion title="Version mismatch errors">
+  `Controller` calls `assertRuntimeScramjetVersion()` in its constructor, which
+  compares the version embedded in the loaded scramjet bundle against the
+  version expected by the controller package.
+
+  **Checklist:**
+
+  - Ensure `@mercuryworkshop/scramjet` (the runtime bundle) and
+    `@mercuryworkshop/scramjet-controller` (the controller API) are on
+    compatible versions. The version check will throw with a descriptive message
+    if they are not.
+  - When using `@mercuryworkshop/scramjet-bootstrap`, pass explicit version pin
+    options (`scramjetVersionPin`, `scramjetControllerVersionPin`) to
+    `bootstrap()` to lock both packages to the same release and prevent
+    mismatches caused by CDN caching.
+  - If you are building from source, run `pnpm build` from the repository root
+    to ensure all packages are rebuilt together and share the same embedded
+    version string.
+
+  ```ts
+  // Example: pinning versions in bootstrap
+  await bootstrap({
+    transport: 'libcurl',
+    swPath: '/sw.js',
+    wispPath: '/wisp/',
+    scramjetVersionPin: '0.5.0',
+    scramjetControllerVersionPin: '0.5.0',
+    // ...other paths
+  });
+  ```
+</Accordion>
+
+<Accordion title="Building from source (WASM)">
+  The WASM rewriter is written in Rust and requires a specific set of build
+  tools. Missing or outdated tools are the most common cause of build failures.
+
+  **Required tools:**
+
+  <CardGroup cols={2}>
+    <Card title="rustup" icon="rust">
+      The Rust toolchain installer. Install from
+      [rustup.rs](https://rustup.rs) and ensure the `wasm32-unknown-unknown`
+      target is installed: `rustup target add wasm32-unknown-unknown`
+    </Card>
+    <Card title="wasm-bindgen" icon="link">
+      Generates the JS/TS bindings for the compiled WASM module.
+      Install with `cargo install wasm-bindgen-cli`.
+    </Card>
+    <Card title="wasm-opt (Binaryen)" icon="bolt">
+      Optimizes the WASM binary for size and performance. Install
+      from the [Binaryen releases](https://github.com/WebAssembly/binaryen)
+      page and ensure `wasm-opt` is on your `PATH`.
+    </Card>
+    <Card title="wasm-snip fork" icon="scissors">
+      A patched fork of `wasm-snip` used to remove dead code from the binary.
+      Install from the [r58Playz/wasm-snip](https://github.com/r58Playz/wasm-snip)
+      repository.
+    </Card>
+  </CardGroup>
+
+  **Build steps:**
+
+  ```sh
+  # 1. Clone the repo (recursive for submodules)
+  git clone --recursive https://github.com/MercuryWorkshop/scramjet
+  cd scramjet
+
+  # 2. Install JS dependencies
+  pnpm i
+
+  # 3. Build the WASM rewriter
+  cd packages/core
+  pnpm rewriter:build
+
+  # 4. Build all packages from the repo root
+  cd ../..
+  pnpm build
+  ```
+</Accordion>
+
+---
+
+<Tip>
+  Run `pnpm dev` from the repository root to start the Scramjet demo server at
+  `http://localhost:4141` with hot reload enabled for all TypeScript packages.
+  The demo is the fastest way to verify that a code change works end-to-end —
+  note that changes to the Rust rewriter (`packages/core/src/rewriter`) require
+  a separate `pnpm rewriter:build` step and do not hot-reload automatically.
+</Tip>

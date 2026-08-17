@@ -1,0 +1,174 @@
+---
+title: "Configuring URL Codecs for Scramjet Proxy"
+sidebarTitle: "Codec"
+description: "Learn how Scramjet encodes and decodes proxied URLs using configurable codec functions, and how to implement a custom codec for your proxy deployment."
+---
+
+Every URL that Scramjet proxies must be transformed into a safe representation before it appears in the browser's address bar, `<iframe>` `src` attributes, and rewritten HTML. A codec is the pair of `encode` and `decode` functions that performs this transformation. Scramjet uses the codec consistently on both sides of the proxy — the `Controller` encodes URLs before navigation and decodes them when intercepting service worker fetch events — so choosing the right codec is a global concern that affects how your proxied URLs look, how they behave in the browser's history, and how difficult they are to identify as proxied traffic.
+
+## The Default Codec
+
+The default codec uses the browser's built-in `encodeURIComponent` and `decodeURIComponent` functions. This is defined in `@mercuryworkshop/scramjet-controller`:
+
+```ts
+codec: {
+  encode: (url: string) => {
+    if (!url) return url;
+    return encodeURIComponent(url);
+  },
+  decode: (url: string) => {
+    if (!url) return url;
+    return decodeURIComponent(url);
+  },
+}
+```
+
+This codec is safe, reversible, and works in all environments without any additional dependencies. The trade-off is that encoded URLs are human-readable — `https://example.com/` becomes `https%3A%2F%2Fexample.com%2F` — which makes it trivially obvious that a URL is being proxied.
+
+## Proxied URL Format
+
+Regardless of which codec you use, Scramjet constructs proxied URLs in this format:
+
+```
+{prefix}{controllerId}/{frameId}/{encodedUrl}
+```
+
+Where:
+- **`prefix`** defaults to `/~/sj/` (configurable via `controller.config.prefix`)
+- **`controllerId`** is a random 8-character alphanumeric ID generated per `Controller` instance
+- **`frameId`** is a random 8-character alphanumeric ID generated per `Frame` instance
+- **`encodedUrl`** is the output of your codec's `encode` function
+
+**Example with the default codec:**
+```
+/~/sj/a3f9b2c1/d7e4f1a0/https%3A%2F%2Fexample.com%2F
+```
+
+**Example with a base64 codec:**
+```
+/~/sj/a3f9b2c1/d7e4f1a0/aHR0cHM6Ly9leGFtcGxlLmNvbS8=
+```
+
+## Why Use a Custom Codec?
+
+<CardGroup cols={3}>
+  <Card title="Obfuscation" icon="eye-slash">
+    Base64 or XOR encoding makes proxied URLs unrecognisable at a glance, useful for deployments where URL transparency would be a problem.
+  </Card>
+  <Card title="Shorter URLs" icon="link">
+    Custom encodings can produce shorter representations than percent-encoding for common URL characters.
+  </Card>
+  <Card title="Routing Integration" icon="route">
+    Match an existing URL scheme in your application, for example stripping the query string or fitting proxied URLs into a specific path pattern.
+  </Card>
+</CardGroup>
+
+## Implementing a Custom Codec
+
+The codec is set in the `config` field of `Controller`. When using `initBootstrap()`, the controller is constructed by `loadRest()` internally — to use a custom codec you must construct the `Controller` manually after calling `loadRest()` indirectly, or intercept the controller after `initBootstrap()` returns and call `controller.config.codec = { ... }` before any frames are created.
+
+### Base64 Codec
+
+A simple base64 codec that completely hides the structure of proxied URLs:
+
+```ts
+import { Controller } from '@mercuryworkshop/scramjet-controller';
+
+// Assuming sw and transport are already set up
+const controller = new Controller({
+  serviceworker: sw,
+  transport,
+  config: {
+    codec: {
+      encode: (url: string) => btoa(url),
+      decode: (url: string) => atob(url),
+    },
+  },
+});
+```
+
+<Warning>
+  Base64 output contains `+`, `/`, and `=` characters. The `/` in particular will break URL path parsing because Scramjet embeds the encoded URL as a path segment. **Always use URL-safe base64** (`btoa` output with `/` → `_` and `+` → `-` substitution) for codecs used inside URLs:
+
+  ```ts
+  codec: {
+    encode: (url: string) =>
+      btoa(url).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
+    decode: (url: string) => {
+      const padded = url.replace(/-/g, '+').replace(/_/g, '/');
+      const pad = padded.length % 4;
+      return atob(pad ? padded + '='.repeat(4 - pad) : padded);
+    },
+  }
+  ```
+</Warning>
+
+### XOR Obfuscation Codec
+
+A lightweight obfuscation that avoids `/` and `?` in its output by combining XOR with hex encoding:
+
+```ts
+codec: {
+  encode: (url: string) => {
+    const key = 42;
+    return Array.from(url)
+      .map((c) => (c.charCodeAt(0) ^ key).toString(16).padStart(2, '0'))
+      .join('');
+  },
+  decode: (url: string) => {
+    const key = 42;
+    const bytes = url.match(/.{2}/g) ?? [];
+    return bytes.map((b) => String.fromCharCode(parseInt(b, 16) ^ key)).join('');
+  },
+}
+```
+
+### Passing a Custom Codec via BootstrapOptions
+
+If you are constructing the full client-side setup manually (not using `initBootstrap()`), pass the codec through the `Controller` constructor:
+
+```ts
+import { Controller } from '@mercuryworkshop/scramjet-controller';
+
+const sw = await navigator.serviceWorker.register('/sw.js');
+const controller = new Controller({
+  serviceworker: sw.installing ?? sw.active!,
+  transport: myTransport,
+  config: {
+    codec: {
+      encode: (url) => btoa(url).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
+      decode: (url) => {
+        const padded = url.replace(/-/g, '+').replace(/_/g, '/');
+        const pad = padded.length % 4;
+        return atob(pad ? padded + '='.repeat(4 - pad) : padded);
+      },
+    },
+  },
+});
+```
+
+## Codec Symmetry
+
+The only hard requirement for a valid codec is symmetry: `decode(encode(url))` must equal the original `url` for every possible URL string.
+
+```ts
+// ✅ Valid — perfectly symmetric
+const url = 'https://example.com/path?query=value&other=123#hash';
+console.log(codec.decode(codec.encode(url)) === url); // true
+```
+
+<Warning>
+  If your codec is not symmetric — for example, if `decode(encode(url))` loses characters or alters the URL in any way — Scramjet will silently serve wrong pages or fail to route requests entirely. Always test your codec against URLs that contain special characters: `?`, `#`, `&`, `=`, spaces, Unicode, and paths with multiple segments.
+</Warning>
+
+## Same Codec on Both Sides
+
+Scramjet's controller is the single source of truth for the codec — it is used both to encode URLs when calling `frame.go()` and to decode URLs when the service worker intercepts fetch events. **You do not need to configure the codec separately for the server.** The `Controller` instance in the browser handles both encoding (before navigation) and decoding (inside the SW fetch handler) using the same functions you passed to `new Controller({ config: { codec } })`.
+
+<Note>
+  Because the codec functions are serialised via `.toString()` and embedded in the scripts injected into every proxied page, **codec functions must be self-contained** — they cannot close over variables defined outside the function body. Referencing an external `key` variable from a module-level constant will work in the outer page but will fail when the function is re-evaluated inside the injected context.
+</Note>
+
+<Tip>
+  Use a codec whose output consists only of characters from `[A-Za-z0-9\-_~]` to prevent any ambiguity with URL path separators and query string delimiters. The hex-encoded XOR example above satisfies this constraint. URL-safe base64 (`-` and `_` variants, no padding) is another safe choice.
+</Tip>

@@ -1,0 +1,240 @@
+---
+title: "Tap — Scramjet Hook Dispatcher API"
+sidebarTitle: "Tap"
+description: "API reference for the Tap static class and TapInstance type: Tap.create(), Tap.tap(), Tap.dispatch(), and Tap.getTappers() for the hook system."
+---
+
+`Tap` is the static class at the heart of Scramjet's event and interception model. Every proxy lifecycle event — fetches being intercepted, frames initializing, errors being thrown — is channelled through hooks created and dispatched by `Tap`. Because all methods are static, `Tap` is never instantiated; you call `Tap.create()` to mint a new typed hook namespace, `Tap.tap()` to register callbacks, and `Tap.dispatch()` to fire them. The [`Plugin`](/api/plugin) class wraps `Tap.tap()` in a more ergonomic API with automatic `TapOrder` propagation — most application code should use `Plugin.tap()` rather than calling `Tap.tap()` directly.
+
+## Import
+
+```ts
+import { Tap } from '@mercuryworkshop/scramjet';
+```
+
+`Tap` is part of the core `@mercuryworkshop/scramjet` package and is available in all execution contexts (main thread, service worker, and worker threads).
+
+---
+
+## `Tap.create<T>()`
+
+```ts
+static create<T extends Record<string, Description>>(): TapInstance<T>
+```
+
+Creates a new hook namespace typed by `T`. Returns a `Proxy` object where accessing any property key creates and returns a hook for that event name. The hooks are keyed by the property names of `T`, ensuring that only hook names declared in the type are considered valid by TypeScript.
+
+### Type parameter
+
+`T` must be an object type whose values each satisfy `{ context?: object; props?: object }`. Each key of `T` becomes an accessible hook on the returned `TapInstance`.
+
+### Return value
+
+A `TapInstance<T>` — a proxy object where `instance.someHook` returns a stable hook reference you can pass to `Tap.tap()` and `Tap.dispatch()`.
+
+<Note>
+  Hook references are stable: accessing the same property on the same
+  `TapInstance` twice returns the same object. You can safely store a hook
+  reference in a variable and pass it around without losing the association.
+</Note>
+
+### Example
+
+```ts
+import { Tap } from '@mercuryworkshop/scramjet';
+
+type NavigationHooks = {
+  navigate: {
+    context: { url: string };
+    props: { cancel: boolean };
+  };
+  popstate: {
+    context: { url: string; state: unknown };
+    props: Record<string, never>;
+  };
+};
+
+const navHooks = Tap.create<NavigationHooks>();
+
+// navHooks.navigate and navHooks.popstate are now valid typed hook references
+```
+
+---
+
+## `Tap.tap<T>()`
+
+```ts
+static tap<T extends Description>(
+  hook: T,
+  callback: (context: T['context'], props: T['props']) => void | Promise<void>,
+  plugin?: Plugin,
+  order?: TapOrder
+): void
+```
+
+Registers a callback on a hook. Prefer `plugin.tap(hook, callback)` when you already have a `Plugin` instance — it automatically threads through the plugin identity and default order.
+
+<ParamField path="hook" type="T" required>
+  A hook reference from a `TapInstance`, such as `navHooks.navigate`.
+</ParamField>
+
+<ParamField path="callback" type="(context, props) => void | Promise<void>" required>
+  The function to invoke when the hook is dispatched.
+
+  - **`context`** — read-only event data (the shape is whatever `T['context']` declares).
+  - **`props`** — a mutable object that callbacks can use to influence behavior.
+
+  Async callbacks are awaited via `Promise.all` alongside all other registered callbacks.
+</ParamField>
+
+<ParamField path="plugin" type="Plugin">
+  The plugin to associate this callback with. Used by `TapOrder` sorting and
+  by `Tap.getTappers()`. Defaults to `new Plugin('anonymous')` if omitted.
+</ParamField>
+
+<ParamField path="order" type="TapOrder">
+  Explicit ordering constraints for this specific callback. Defaults to `{}`
+  (no ordering constraints).
+</ParamField>
+
+---
+
+## `Tap.dispatch<T>()`
+
+```ts
+static dispatch<T extends Description>(
+  hook: T,
+  context: T['context'],
+  props: T['props']
+): Promise<void[]> | null
+```
+
+Fires all callbacks registered on `hook`, passing `context` and `props` to each. Callbacks are sorted by the `TapOrder` dependency graph before execution, then run concurrently.
+
+<ParamField path="hook" type="T" required>
+  The hook to dispatch.
+</ParamField>
+
+<ParamField path="context" type="T['context']" required>
+  The context object passed to every callback. Typically read-only data
+  describing the event.
+</ParamField>
+
+<ParamField path="props" type="T['props']" required>
+  The props object passed to every callback. Callbacks may mutate this object
+  to communicate results back to the dispatcher.
+</ParamField>
+
+### Return value
+
+`Promise<void[]>` if at least one callback is registered, or `null` if no callbacks have tapped the hook. This lets call sites skip awaiting when nothing is registered (a common fast path in the fetch pipeline).
+
+<Note>
+  All callbacks run **concurrently** via `Promise.all`. This means two async
+  callbacks tapped on the same hook run at the same time rather than in
+  sequence. Avoid relying on one async callback's side-effects being visible
+  inside another — if you need sequencing, place the logic in a single callback
+  or use `TapOrder` with synchronous reads of the shared `props` object (which
+  is available to all callbacks once the previous synchronous segment
+  completes).
+</Note>
+
+---
+
+## `Tap.getTappers<T>()`
+
+```ts
+static getTappers<T extends Description>(hook: T): Plugin[]
+```
+
+Returns an array of all `Plugin` instances that have registered a callback on `hook`. Useful for introspection and debugging.
+
+<ParamField path="hook" type="T" required>
+  The hook to inspect.
+</ParamField>
+
+### Return value
+
+`Plugin[]` — one entry per registered callback, in registration order. A plugin appears once per `tap()` call, so the same plugin can appear multiple times if it tapped the hook more than once.
+
+---
+
+## `TapOrder` Type
+
+`TapOrder` is a plain object that declares ordering constraints for a single callback relative to other named plugins.
+
+<ResponseField name="before" type="readonly string[]">
+  Plugin names that this callback should run **before**. If both this plugin
+  and a named plugin have tapped the same hook, this callback will be placed
+  earlier in the execution sequence.
+</ResponseField>
+
+<ResponseField name="after" type="readonly string[]">
+  Plugin names that this callback should run **after**. If both this plugin
+  and a named plugin have tapped the same hook, this callback will be placed
+  later in the execution sequence.
+</ResponseField>
+
+---
+
+## `TapInstance<T>` Type
+
+```ts
+type TapInstance<T extends Record<string, Description>> = {
+  [K in keyof T]: T[K] & InternalHookDescription;
+};
+```
+
+The return type of `Tap.create<T>()`. Accessing any property `K` of a `TapInstance` returns an opaque hook reference typed as `T[K]`, which carries the `context` and `props` types for `T[K]` through to `tap()` and `dispatch()`.
+
+---
+
+## Full Example: Custom Hook Namespace
+
+```ts
+import { Tap, Plugin } from '@mercuryworkshop/scramjet';
+
+// 1. Declare the shape of your hooks
+type MyHooks = {
+  navigate: {
+    context: { url: string };
+    props: { cancel: boolean };
+  };
+};
+
+// 2. Create the hook namespace
+const myHooks = Tap.create<MyHooks>();
+
+// 3. Register a plugin that blocks certain URLs
+const blocker = new Plugin('url-blocker');
+blocker.tap(myHooks.navigate, (context, props) => {
+  if (context.url.includes('blocked.com')) {
+    props.cancel = true;
+  }
+});
+
+// 4. Dispatch the hook from your own code
+async function navigate(url: string): Promise<void> {
+  const context = { url };
+  const props = { cancel: false };
+
+  await Tap.dispatch(myHooks.navigate, context, props);
+
+  if (props.cancel) {
+    console.log('Navigation blocked:', url);
+    return;
+  }
+
+  // proceed with navigation...
+}
+
+await navigate('https://blocked.com/page'); // blocked
+await navigate('https://example.com');      // allowed
+```
+
+### Inspecting registered plugins
+
+```ts
+const tappers = Tap.getTappers(myHooks.navigate);
+console.log(tappers.map((p) => p.name)); // ['url-blocker']
+```

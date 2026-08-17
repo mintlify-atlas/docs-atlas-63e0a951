@@ -1,0 +1,84 @@
+---
+title: "Scramjet: Browser-Based Web Proxy for Bypassing Censorship"
+sidebarTitle: "Introduction"
+description: "Scramjet is an experimental interception-based web proxy that sandboxes and rewrites arbitrary web content inside the browser using a Rust/WASM rewriter."
+---
+
+Scramjet is an experimental, interception-based web proxy designed to evade internet censorship and bypass arbitrary browser restrictions. It runs entirely within the browser, sandboxing arbitrary web content by combining a Service Worker fetch interceptor with a high-performance Rust/WASM JavaScript rewriter. Rather than simply tunneling HTTP traffic, Scramjet rewrites loaded pages at the AST level — rewriting JavaScript, HTML attributes, CSS `url()` values, and even WebAssembly binaries — so that proxied sites behave as if they were loaded from their original origins while remaining fully contained within the proxy's sandbox.
+
+## What Scramjet Does
+
+Scramjet lets you load and interact with any web application inside the browser without that application being able to detect the proxy context or escape the sandbox. It bypasses CORS restrictions, instruments and debugs sites in place, and provides a foundation for building production-grade web proxy deployments. The project is published under the **AGPL-3.0-only** license.
+
+<Note>
+  Scramjet is currently in **alpha** (`2.x.x-alpha`). APIs are subject to change between releases. Pin to a specific major version in production deployments.
+</Note>
+
+## Package Ecosystem
+
+Scramjet is split into focused packages so you only ship what you need.
+
+<CardGroup cols={2}>
+  <Card title="@mercuryworkshop/scramjet" icon="microchip">
+    The core rewriting engine. Contains the Service Worker fetch handler, the Rust/WASM JS rewriter, HTML/CSS rewriters, URL encoding utilities, and the `CookieJar`. This is the package that runs inside the SW and inside every proxied page.
+  </Card>
+  <Card title="@mercuryworkshop/scramjet-controller" icon="sliders">
+    The `Controller` and `Frame` classes that run on the host page. The `Controller` manages the MessageChannel to the Service Worker, persists cookies to IndexedDB, and owns the transport layer. Each `Frame` wraps an `<iframe>` and exposes navigation helpers (`go`, `back`, `forward`, `reload`).
+  </Card>
+  <Card title="@mercuryworkshop/scramjet-utils" icon="puzzle-piece">
+    A collection of built-in plugins for the `Frame` API, including `HttpCachePlugin`, `UrlWatcherPlugin`, and `CatchEscapedLinksPlugin`. Use these to add HTTP caching, URL bar sync, and link-escape interception with zero extra code.
+  </Card>
+  <Card title="@mercuryworkshop/proxy-bootstrap" icon="server">
+    A server-side helper (`bootstrap()`) that downloads the correct pinned versions of all Scramjet packages from npm at startup, serves them over HTTP, generates the Service Worker entry point on the fly, and starts a Wisp WebSocket server for transport. Drop it into any Node.js HTTP server.
+  </Card>
+  <Card title="create-proxy-app" icon="terminal">
+    An interactive CLI scaffolding tool (`npx create-proxy-app`). Guides you through project name, Git init, dependency installation, and package-manager selection, then writes a working proxy app in seconds.
+  </Card>
+</CardGroup>
+
+## Supported Sites
+
+Scramjet has been tested against a broad range of modern web applications, including sites that rely heavily on client-side JavaScript, service workers, WebSockets, and streaming media.
+
+| Category | Sites |
+|---|---|
+| Search & Productivity | Google, ChatGPT |
+| Video & Music | YouTube, Spotify |
+| Social Media | Instagram, Reddit, Twitter, Discord |
+| Cloud Gaming | GeForce NOW, now.gg |
+
+## Architecture Overview
+
+The following steps describe the full life-cycle of a single page load through Scramjet.
+
+<Steps>
+  <Step title="Service Worker Registration">
+    The host page registers a Service Worker that imports `controller.sw.js`. The SW listens for `fetch` events and calls `$scramjetController.shouldRoute(event)`. Any request whose URL falls under the proxy prefix (e.g. `/~/sj/{controllerId}/{frameId}/`) is intercepted.
+  </Step>
+  <Step title="Controller ↔ SW Handshake">
+    When the host page instantiates a `Controller`, it opens a `MessageChannel` and sends the channel port to the SW along with the controller ID and prefix. The SW and Controller then communicate over this private channel using a typed RPC layer.
+  </Step>
+  <Step title="URL Encoding">
+    When `frame.go(url)` is called, the target URL is encoded (default: `encodeURIComponent`) and prefixed to form a proxied URL such as `/~/sj/{id}/{frameId}/https%3A%2F%2Fexample.com%2F`. All subsequent relative URLs within the loaded document are rewritten to follow this same pattern.
+  </Step>
+  <Step title="Fetch & Rewrite">
+    The SW receives the proxied fetch, decodes the URL, and dispatches the request to the `Controller` via RPC. The `Controller` calls the configured transport (Epoxy or libcurl over Wisp/WebSocket) to actually fetch the upstream resource, then hands the response body back to the rewriter.
+  </Step>
+  <Step title="Content Rewriting">
+    The Rust/WASM rewriter processes the response. JavaScript is rewritten at the AST level (wrapping property accesses to `window.location`, `document.domain`, etc.), HTML attributes are rewritten to point to proxied URLs, CSS `url()` values are encoded, and a `<script>` block bootstrapping the client-side Scramjet runtime is injected into every HTML document.
+  </Step>
+  <Step title="Sandboxed Execution">
+    The rewritten page is served back to the browser and rendered inside the `<iframe>`. The injected Scramjet runtime intercepts every subsequent fetch, `eval`, `postMessage`, WebSocket constructor, and property access that could leak or escape the sandbox.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Scaffold a working proxy app in under 5 minutes using `create-proxy-app` and start browsing the web through Scramjet immediately.
+  </Card>
+  <Card title="How It Works" icon="magnifying-glass" href="/how-it-works">
+    Dive into the Service Worker interception model, the Rust/WASM rewriter, URL encoding, cookie sandboxing, and the transport layer architecture.
+  </Card>
+</CardGroup>

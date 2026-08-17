@@ -1,0 +1,214 @@
+---
+title: "proxy-bootstrap Client API: init() and loadRest()"
+sidebarTitle: "Bootstrap Client"
+description: "API reference for the proxy-bootstrap client module: the init() function, loadRest(), and the auto-generated bootstrap-init.js script."
+---
+
+The proxy-bootstrap client module is what a browser page actually runs to bring the Scramjet proxy to life. Once the [server-side `bootstrap()`](/api/bootstrap-server) is configured and your server is running, a single `<script>` tag and one `await initBootstrap()` call is enough to register a service worker, load the Scramjet runtime, connect a transport to the Wisp relay, and obtain a ready-to-use `Controller`. The entire client implementation is inlined into the server-generated `bootstrap-init.js` so there is no separate file to deploy or version independently.
+
+<Tip>
+  The bootstrap approach requires zero bundler configuration on the client side.
+  Include one `<script src="/bootstrap-init.js"></script>` tag and you are
+  immediately ready to call `initBootstrap()`. No Webpack, Vite, or Rollup
+  setup is needed.
+</Tip>
+
+---
+
+## How It Works
+
+1. The server generates `bootstrap-init.js` at the URL configured by `bootstrapInitPath` (default: `/bootstrap-init.js`).
+2. This script is a thin wrapper that imports the real client code as a **base64-encoded data URL** module, then exposes `async function initBootstrap(): Promise<Controller>` as a global on the page.
+3. Calling `initBootstrap()` runs through the full initialization sequence:
+   - Registers the service worker at `swPath`.
+   - Loads the Scramjet bundle, controller API script, and scramjet-utils via `<script>` tags.
+   - Loads the transport client (Epoxy or libcurl) via a `<script>` tag.
+   - Constructs the transport, pointing it at the Wisp WebSocket endpoint.
+   - Instantiates a `Controller` with the service worker and transport.
+   - Returns the `Controller`.
+
+<Note>
+  The client code is embedded inside `bootstrap-init.js` as a base64 data URL
+  rather than being served as a separate file. This means the server only needs
+  to expose one URL for the entire bootstrap sequence, and the client code
+  version always matches the server configuration without any cache-busting
+  concerns.
+</Note>
+
+---
+
+## `initBootstrap()`
+
+```ts
+declare function initBootstrap(): Promise<Controller>
+```
+
+A global function injected into the page by including `bootstrap-init.js`. Performs the full initialization sequence and resolves with a `Controller` instance.
+
+### Return value
+
+`Promise<Controller>` — a `Controller` from `@mercuryworkshop/scramjet-controller`. The controller is fully constructed but **not yet ready** when the promise resolves; call `await controller.wait()` before creating frames.
+
+---
+
+## Usage in HTML
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Scramjet Proxy</title>
+  <!-- 1. Load the bootstrap script -->
+  <script src="/bootstrap-init.js"></script>
+</head>
+<body>
+  <iframe id="frame"></iframe>
+
+  <script type="module">
+    // 2. Initialize the proxy — registers SW, loads scripts, connects transport
+    const controller = await initBootstrap();
+
+    // 3. Wait for the service worker to be fully ready
+    await controller.wait();
+
+    // 4. Create a proxied frame and navigate
+    const frame = controller.createFrame(
+      document.getElementById('frame')
+    );
+    frame.go('https://example.com');
+  </script>
+</body>
+</html>
+```
+
+---
+
+## `init()`
+
+```ts
+async function init(cfg: BootstrapOptions): Promise<Controller>
+```
+
+The underlying function that `initBootstrap()` delegates to. Available from `@mercuryworkshop/proxy-bootstrap/client` for scenarios where you are bundling your own client code and do not want to rely on the auto-generated global.
+
+<ParamField path="cfg" type="BootstrapOptions" required>
+  The full bootstrap configuration object. When called via `initBootstrap()`,
+  the server serializes its current configuration into the generated script so
+  this is filled in automatically. When calling `init()` directly from a
+  bundled module, you must supply the configuration yourself, ensuring the
+  paths match what your server is actually serving.
+</ParamField>
+
+### Return value
+
+`Promise<Controller>` — same as `initBootstrap()`.
+
+### Custom bundling example
+
+```ts
+import { init } from '@mercuryworkshop/proxy-bootstrap/client';
+
+const controller = await init({
+  transport: 'libcurl',
+  swPath: '/sw.js',
+  wispPath: '/wisp/',
+  scramjetBundlePath: '/scram/scramjet.js',
+  scramjetWasmPath: '/scram/scramjet.wasm',
+  scramjetUtilsBundlePath: '/scram/scramjet-utils.js',
+  scramjetControllerApiPath: '/controller/controller.api.js',
+  scramjetControllerInjectPath: '/controller/controller.inject.js',
+  scramjetControllerSwPath: '/controller/controller.sw.js',
+  libcurlClientPath: '/clients/libcurl-client.js',
+  epoxyClientPath: '/clients/epoxy-client.js',
+  bareClientPath: '/clients/bare-client.js',
+  bootstrapInitPath: '/bootstrap-init.js',
+  bootstrapApiPath: '/bootstrap-api.js',
+});
+
+await controller.wait();
+```
+
+---
+
+## `loadRest()`
+
+```ts
+async function loadRest(
+  sw: ServiceWorker,
+  cfg: BootstrapOptions
+): Promise<Controller>
+```
+
+A lower-level entry point for when you have already registered the service worker yourself and only need to load the Scramjet scripts and create the transport and controller.
+
+<ParamField path="sw" type="ServiceWorker" required>
+  An already-registered and active `ServiceWorker` instance. Obtain this from
+  `navigator.serviceWorker.register()` or `navigator.serviceWorker.controller`.
+</ParamField>
+
+<ParamField path="cfg" type="BootstrapOptions" required>
+  The same configuration object used by `init()`.
+</ParamField>
+
+### Return value
+
+`Promise<Controller>` — a fully constructed `Controller` bound to the supplied service worker.
+
+### What `loadRest()` does
+
+1. Loads `cfg.scramjetBundlePath` as a `<script>` tag.
+2. Loads `cfg.scramjetControllerApiPath` as a `<script>` tag.
+3. Loads `cfg.scramjetUtilsBundlePath` as a `<script>` tag.
+4. Loads the transport client script (`epoxyClientPath` or `libcurlClientPath`).
+5. Constructs the transport, pointing it at the Wisp endpoint derived from `cfg.wispPath`.
+6. Configures the controller with the correct path overrides from `cfg`.
+7. Instantiates and returns a `Controller`.
+
+### Example — custom service worker registration
+
+```ts
+import { loadRest } from '@mercuryworkshop/proxy-bootstrap/client';
+
+// Register the SW yourself, with custom options
+const registration = await navigator.serviceWorker.register('/sw.js', {
+  scope: '/',
+  updateViaCache: 'none',
+});
+
+await navigator.serviceWorker.ready;
+const sw = registration.active!;
+
+const controller = await loadRest(sw, {
+  transport: 'libcurl',
+  swPath: '/sw.js',
+  wispPath: '/wisp/',
+  scramjetBundlePath: '/scram/scramjet.js',
+  scramjetWasmPath: '/scram/scramjet.wasm',
+  scramjetUtilsBundlePath: '/scram/scramjet-utils.js',
+  scramjetControllerApiPath: '/controller/controller.api.js',
+  scramjetControllerInjectPath: '/controller/controller.inject.js',
+  scramjetControllerSwPath: '/controller/controller.sw.js',
+  libcurlClientPath: '/clients/libcurl-client.js',
+  epoxyClientPath: '/clients/epoxy-client.js',
+  bareClientPath: '/clients/bare-client.js',
+  bootstrapInitPath: '/bootstrap-init.js',
+  bootstrapApiPath: '/bootstrap-api.js',
+});
+
+await controller.wait();
+```
+
+---
+
+## Transport Selection
+
+The client automatically connects to the Wisp server using a WebSocket URL derived from the current page origin and `cfg.wispPath`:
+
+```ts
+// Constructed internally by loadRest()
+const resolvedWispPath =
+  `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${cfg.wispPath}`;
+```
+
+This means the Wisp endpoint is always on the same host as the page, which avoids cross-origin WebSocket issues and works behind most reverse proxies without additional configuration.

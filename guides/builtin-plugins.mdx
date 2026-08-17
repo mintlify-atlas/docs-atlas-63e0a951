@@ -1,0 +1,301 @@
+---
+title: "Using Scramjet's Built-in Utility Plugins"
+sidebarTitle: "Built-in Plugins"
+description: "Explore the built-in Scramjet plugins from scramjet-utils: HttpCachePlugin, UrlWatcherPlugin, LinkHandlerPlugin, CatchEscapedLinksPlugin, and EventHandlerPlugin."
+---
+
+Scramjet ships a set of production-ready plugins in the `@mercuryworkshop/scramjet-utils` package. These plugins handle the most common proxy UX requirements — caching upstream responses, detecting URL changes, intercepting link clicks, and recovering from navigation escapes — so you don't have to implement them from scratch. All plugins follow the same `ManagedPlugin` contract and are installed through the standard `createFrame` API.
+
+## Installation
+
+```bash
+npm install @mercuryworkshop/scramjet-utils
+```
+
+All plugins and utilities are imported from a single entry point:
+
+```ts
+import {
+  HttpCachePlugin,
+  UrlWatcherPlugin,
+  LinkHandlerPlugin,
+  CatchEscapedLinksPlugin,
+  EventHandlerPlugin,
+  setupAlwaysLastBubble,
+} from '@mercuryworkshop/scramjet-utils';
+```
+
+---
+
+## Plugin Reference
+
+<CardGroup cols={2}>
+  <Card title="HttpCachePlugin" icon="database">
+    RFC 9111 compliant HTTP cache using the browser Cache API. Skips the network for fresh resources.
+  </Card>
+  <Card title="UrlWatcherPlugin" icon="eye">
+    Fires a callback whenever the proxied frame URL changes, including hash changes and History API calls.
+  </Card>
+  <Card title="LinkHandlerPlugin" icon="arrow-up-right-from-square">
+    Intercepts anchor left-clicks and middle-clicks to open URLs via a callback rather than the browser default.
+  </Card>
+  <Card title="CatchEscapedLinksPlugin" icon="shield">
+    Redirects top-level navigations that escape the proxy frame back through the proxy shell.
+  </Card>
+</CardGroup>
+
+---
+
+## `HttpCachePlugin`
+
+Scramjet's service worker intercepts every network request, which means the browser's built-in HTTP cache is bypassed entirely. `HttpCachePlugin` restores caching by storing **upstream** (pre-rewrite) `BareResponse` objects in the [Cache API](https://developer.mozilla.org/en-US/docs/Web/API/Cache) under the cache named `scramjet-http-cache-v2`.
+
+Storing the pre-rewrite bytes means the cache is shared across all Frames and Controllers — a cache hit in one Frame benefits all others — and the rewriter still runs on every hit to apply the current Frame's prefix correctly.
+
+**RFC 9111 compliance highlights:**
+
+- Only `GET` and `HEAD` requests are cached.
+- Cacheable status codes: `200 203 204 300 301 308 404 405 410 414 501`.
+- Respects `Cache-Control: no-store`, `no-cache`, `max-age`, `s-maxage`, `immutable`, and `Vary`.
+- Falls back to a heuristic freshness lifetime of 10% × `(Date − Last-Modified)` when no explicit directive is present.
+- `Vary: *` is never stored.
+
+### Constructor
+
+```ts
+new HttpCachePlugin(options?: HttpCachePluginOptions)
+```
+
+<ParamField body="options.cacheName" type="string" default="'scramjet-http-cache-v2'">
+  The name passed to `caches.open()`. Override to use a different bucket or to isolate caches per deployment.
+</ParamField>
+
+### Usage
+
+```ts
+import { HttpCachePlugin } from '@mercuryworkshop/scramjet-utils';
+
+const frame = controller.createFrame(iframe, {
+  plugins: [new HttpCachePlugin()],
+});
+```
+
+### Busting the cache
+
+```ts
+const cache = new HttpCachePlugin();
+// Later, when you want to force-refresh all cached resources:
+await cache.bust(); // deletes the entire cache bucket
+```
+
+<Note>
+  `bust()` also clears the internal `caches.open()` memoization, so the next request will open a fresh empty cache.
+</Note>
+
+---
+
+## `UrlWatcherPlugin`
+
+Fires a callback every time the URL of the **top-level** proxied frame changes. This covers:
+
+- Full page navigations (new document loads)
+- `history.pushState` / `history.replaceState` calls
+- Hash changes via `location.hash` or anchor fragment links
+
+This is the recommended way to keep your proxy shell's address bar (or the browser URL bar) in sync with the page inside the frame.
+
+### Constructor
+
+```ts
+new UrlWatcherPlugin(onUrlChange: (url: string) => void)
+```
+
+<ParamField body="onUrlChange" type="(url: string) => void" required>
+  Callback invoked with the new decoded URL string whenever the frame navigates.
+</ParamField>
+
+### Usage
+
+```ts
+import { UrlWatcherPlugin } from '@mercuryworkshop/scramjet-utils';
+
+const frame = controller.createFrame(iframe, {
+  plugins: [
+    new UrlWatcherPlugin((url) => {
+      console.log('Frame navigated to:', url);
+      // Sync the host page's address bar
+      history.pushState({}, '', '?url=' + encodeURIComponent(url));
+    }),
+  ],
+});
+```
+
+---
+
+## `LinkHandlerPlugin`
+
+Intercepts clicks on `<a>` elements inside the proxied frame so that links intended to open in a new tab (`target="_blank"`, middle-click, etc.) are routed through your own callback instead of opening a raw browser tab. Without this plugin, those navigations would escape the proxy entirely.
+
+`LinkHandlerPlugin` requires `EventHandlerPlugin` to be installed on the same Frame and will throw at Frame creation time if it is missing.
+
+### Constructor
+
+```ts
+new LinkHandlerPlugin(onNewTab: (url: string) => void)
+```
+
+<ParamField body="onNewTab" type="(url: string) => void" required>
+  Callback invoked with the target URL whenever a link is clicked or middle-clicked. Open a new proxy tab, update the current frame, or handle it any way you like.
+</ParamField>
+
+### Usage
+
+```ts
+import {
+  LinkHandlerPlugin,
+  EventHandlerPlugin,
+} from '@mercuryworkshop/scramjet-utils';
+
+const frame = controller.createFrame(iframe, {
+  plugins: [
+    // EventHandlerPlugin must come first — LinkHandlerPlugin depends on it
+    new EventHandlerPlugin(),
+    new LinkHandlerPlugin((url) => {
+      window.open('?url=' + encodeURIComponent(url));
+    }),
+  ],
+});
+```
+
+<Warning>
+  `LinkHandlerPlugin` declares `'event-handler'` as a dependency. If `EventHandlerPlugin` is not included in the `plugins` array before `LinkHandlerPlugin`, Scramjet will throw a dependency error at `createFrame` time.
+</Warning>
+
+---
+
+## `CatchEscapedLinksPlugin`
+
+Some navigations — such as `window.open()` calls or `<a target="_blank">` links that slip past `LinkHandlerPlugin` — would otherwise open a raw, un-proxied URL in a new tab. `CatchEscapedLinksPlugin` intercepts top-level `document` destination requests on the `fetch.intercept` hook and issues a `302` redirect that routes the navigation back through your proxy shell.
+
+### Constructor
+
+```ts
+new CatchEscapedLinksPlugin(toLocation: (url: URL) => string | URL)
+```
+
+<ParamField body="toLocation" type="(url: URL) => string | URL" required>
+  Given the raw upstream URL that was navigated to, return the proxy-shell URL to redirect to instead (e.g. `'/?url=' + encodeURIComponent(url.href)`).
+</ParamField>
+
+### Usage
+
+```ts
+import { CatchEscapedLinksPlugin } from '@mercuryworkshop/scramjet-utils';
+
+const frame = controller.createFrame(iframe, {
+  plugins: [
+    new CatchEscapedLinksPlugin((url) => {
+      return '/?url=' + encodeURIComponent(url.href);
+    }),
+  ],
+});
+```
+
+<Note>
+  `CatchEscapedLinksPlugin` runs its intercept hook **after** `HttpCachePlugin` (declared via `{ after: ['scramjet-http-cache'] }`), so cache lookups are not disrupted for normal same-frame navigations.
+</Note>
+
+---
+
+## `EventHandlerPlugin`
+
+`EventHandlerPlugin` is a low-level DOM event interception utility. It patches `EventTarget.prototype.addEventListener` inside the proxied window so that a handler registered via `eventHandlerPlugin.addEventListener(target, type, listener)` always executes **after** every listener the page itself registers — even if the page calls `stopPropagation()` or `stopImmediatePropagation()`.
+
+This "always-last-bubble" guarantee is what makes `LinkHandlerPlugin` reliable: Scramjet's link handler runs after any page-defined click listeners, so `e.preventDefault()` on a page's own listener is still respected.
+
+### Constructor
+
+```ts
+new EventHandlerPlugin(options?: EventHandlerPluginOptions)
+```
+
+<ParamField body="options.events" type="string[]" default="['click', 'auxclick', 'contextmenu']">
+  Bubble-phase event types to track. Add additional event names here if you need always-last behavior on other events.
+</ParamField>
+
+### Usage
+
+You rarely need to use `EventHandlerPlugin` directly. Install it as a prerequisite for `LinkHandlerPlugin`:
+
+```ts
+import { EventHandlerPlugin } from '@mercuryworkshop/scramjet-utils';
+
+const frame = controller.createFrame(iframe, {
+  plugins: [new EventHandlerPlugin()],
+});
+```
+
+If you are writing a custom plugin that needs always-last event listeners, retrieve the plugin instance from the frame and call its `addEventListener` method:
+
+```ts
+import type { EventHandlerPlugin } from '@mercuryworkshop/scramjet-utils';
+
+install(frame: Frame): void {
+  super.install(frame);
+
+  this.tap(frame.hooks.init.post, () => {
+    const evtHandler = frame.getPlugin<EventHandlerPlugin>('event-handler');
+    evtHandler.addEventListener(someElement, 'click', (e) => {
+      // Runs after all page-defined listeners
+    });
+  });
+}
+```
+
+---
+
+## `setupAlwaysLastBubble`
+
+`setupAlwaysLastBubble` is a standalone utility function (not a plugin) that powers the internals of `EventHandlerPlugin`. It patches `EventTarget.prototype.addEventListener` on a given `ScramjetClient` instance and returns an `addAlwaysLastEventListener` function you can call to attach always-last handlers.
+
+```ts
+import { setupAlwaysLastBubble } from '@mercuryworkshop/scramjet-utils';
+```
+
+<Note>
+  Most projects should use `EventHandlerPlugin` rather than calling `setupAlwaysLastBubble` directly — the plugin handles per-window setup automatically via the `init.post` hook.
+</Note>
+
+---
+
+## Combining Plugins for Production
+
+<Tip>
+  For a complete production setup, combine `HttpCachePlugin`, `UrlWatcherPlugin`, `EventHandlerPlugin`, `LinkHandlerPlugin`, and `CatchEscapedLinksPlugin` together. This gives you network-level caching, address bar sync, new-tab interception, and escaped-link recovery in one declarative list.
+</Tip>
+
+```ts
+import {
+  HttpCachePlugin,
+  UrlWatcherPlugin,
+  EventHandlerPlugin,
+  LinkHandlerPlugin,
+  CatchEscapedLinksPlugin,
+} from '@mercuryworkshop/scramjet-utils';
+
+const frame = controller.createFrame(iframe, {
+  plugins: [
+    new HttpCachePlugin(),
+    new UrlWatcherPlugin((url) => {
+      history.replaceState({}, '', '?url=' + encodeURIComponent(url));
+    }),
+    new EventHandlerPlugin(),
+    new LinkHandlerPlugin((url) => {
+      window.open('?url=' + encodeURIComponent(url));
+    }),
+    new CatchEscapedLinksPlugin((url) => {
+      return '/?url=' + encodeURIComponent(url.href);
+    }),
+  ],
+});
+```

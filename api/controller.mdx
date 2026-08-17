@@ -1,0 +1,254 @@
+---
+title: "Controller — Scramjet Proxy Orchestrator API"
+sidebarTitle: "Controller"
+description: "API reference for the Controller class: constructor options, createFrame(), wait(), setTransport(), and the config and scramjetConfig properties."
+---
+
+The `Controller` is the central orchestrator of a Scramjet proxy session. It owns the service worker connection, manages the proxy transport, maintains a shared cookie jar, and creates `Frame` instances that represent individual proxied iframes. Every proxied page in your application traces back to a single `Controller`.
+
+## Import
+
+```ts
+import { Controller } from '@mercuryworkshop/scramjet-controller';
+```
+
+## Constructor
+
+```ts
+new Controller(init: ControllerInit)
+```
+
+Instantiates a new `Controller` and immediately begins the initialization sequence: it registers the controller with the service worker via a `MessageChannel`, starts fetching the Scramjet WASM binary, and loads any previously persisted cookies from IndexedDB. The controller is not ready for use until `await controller.wait()` resolves.
+
+<Warning>
+  Do not call `createFrame()` before awaiting `controller.wait()`. Doing so will throw an error because the service worker handshake and WASM load may not have completed.
+</Warning>
+
+### `ControllerInit` parameters
+
+<ParamField body="serviceworker" type="ServiceWorker" required>
+  The active service worker instance. Obtain this from `navigator.serviceWorker.ready` after registering your worker. The controller sends its prefix and instance ID to this worker via a dedicated `MessageChannel` so the worker can route proxied requests back to the correct controller.
+</ParamField>
+
+<ParamField body="transport" type="ProxyTransport" required>
+  The proxy transport implementation to use for all outgoing network requests. Common choices are `LibcurlClient` (from `@mercuryworkshop/libcurl-transport`) for WebSocket-based proxying, or a bare-server-compatible transport. The transport can be swapped at runtime via `setTransport()`.
+</ParamField>
+
+<ParamField body="config" type="Partial<Config>">
+  Optional overrides for the controller's runtime configuration. Merged deeply with the built-in defaults. See the [`Config`](#config-type) type below.
+</ParamField>
+
+<ParamField body="scramjetConfig" type="Partial<ScramjetConfig>">
+  Optional overrides for the Scramjet rewriter configuration passed into each frame. Merged deeply with `defaultConfig`. See the [`ScramjetConfig`](/api/scramjet-config) reference for all available flags and options.
+</ParamField>
+
+### `Config` type
+
+<Expandable title="Config fields">
+  <ParamField body="prefix" type="string" default='"/~/sj/"'>
+    The URL path prefix under which all proxied routes are served. Each controller appends its own `id` to this prefix to create a unique namespace.
+  </ParamField>
+
+  <ParamField body="scramjetPath" type="string" default='"/scramjet/scramjet.js"'>
+    Path to the main Scramjet client bundle served from your origin.
+  </ParamField>
+
+  <ParamField body="injectPath" type="string" default='"/controller/controller.inject.js"'>
+    Path to the controller injection script that bootstraps the Scramjet client inside each proxied page.
+  </ParamField>
+
+  <ParamField body="wasmPath" type="string" default='"/scramjet/scramjet.wasm"'>
+    Path to the Scramjet WASM rewriter binary. The controller fetches this file during initialization and caches it.
+  </ParamField>
+
+  <ParamField body="virtualWasmPath" type="string" default='"scramjet.wasm.js"'>
+    Virtual path appended to each frame prefix through which the WASM payload is served as a JavaScript module.
+  </ParamField>
+
+  <ParamField body="codec" type='Record<"encode" | "decode", (input: string) => string>'>
+    Codec used to encode and decode proxied URLs. Defaults to `encodeURIComponent` / `decodeURIComponent`. Replace this with a custom codec to obfuscate proxy URLs.
+  </ParamField>
+</Expandable>
+
+## Full example
+
+```ts
+import { Controller } from '@mercuryworkshop/scramjet-controller';
+import { LibcurlClient } from '@mercuryworkshop/libcurl-transport';
+
+const registration = await navigator.serviceWorker.register('/sw.js');
+await navigator.serviceWorker.ready;
+
+const transport = new LibcurlClient({
+  wisp: 'wss://yourserver.com/wisp/',
+});
+
+const controller = new Controller({
+  serviceworker: registration.active!,
+  transport,
+  config: {
+    prefix: '/proxy/',
+  },
+  scramjetConfig: {
+    flags: { sourcemaps: true },
+  },
+});
+
+await controller.wait();
+console.log('Controller ready, prefix:', controller.prefix);
+```
+
+---
+
+## Properties
+
+<ResponseField name="id" type="string">
+  A randomly generated 8-character alphanumeric string that uniquely identifies this controller instance within the current page. The ID is appended to `config.prefix` to form `prefix`.
+</ResponseField>
+
+<ResponseField name="config" type="Config">
+  The fully merged controller configuration, combining built-in defaults with any overrides supplied in `ControllerInit.config`. Read-only after construction; use `setTransport()` to change transport-related behavior at runtime.
+</ResponseField>
+
+<ResponseField name="scramjetConfig" type="ScramjetConfig">
+  The fully merged Scramjet rewriter configuration. This object is passed into every `Frame`'s `ScramjetContext` and controls rewriting behavior such as source maps, error capture, and computed property wrapping. See [ScramjetConfig](/api/scramjet-config) for the full flag reference.
+</ResponseField>
+
+<ResponseField name="prefix" type="string">
+  The unique URL namespace for this controller: `config.prefix + id + "/"`. All proxied requests whose path starts with this prefix are dispatched to this controller. For example, `/~/sj/ab12cd34/`.
+</ResponseField>
+
+<ResponseField name="cookieJar" type="CookieJar">
+  Shared cookie store used by all frames belonging to this controller. Cookies are automatically persisted to IndexedDB and synchronized to the service worker so that cross-frame and cross-tab cookie state remains consistent.
+</ResponseField>
+
+<ResponseField name="frames" type="Frame[]">
+  The list of `Frame` instances created by this controller via `createFrame()`. The controller routes incoming service-worker requests to the correct frame by matching the request path against each frame's `prefix`.
+</ResponseField>
+
+<ResponseField name="serviceWorkerController" type="ServiceWorker">
+  The `ServiceWorker` instance provided at construction time. The controller communicates with this worker over a dedicated `MessageChannel` to exchange fetch requests, cookie syncs, and transport initialization messages.
+</ResponseField>
+
+<ResponseField name="isReady" type="boolean">
+  `true` once the controller's internal `ready` promise has resolved — meaning the service worker has acknowledged the controller's registration and the WASM binary has been fetched. Check this flag to determine readiness synchronously; for async code prefer `await controller.wait()`.
+</ResponseField>
+
+<ResponseField name="transport" type="ProxyTransport">
+  The currently active proxy transport. Can be replaced at runtime with `setTransport()`, which propagates the new transport to all existing frames immediately.
+</ResponseField>
+
+---
+
+## Methods
+
+### `wait()`
+
+```ts
+async wait(): Promise<void>
+```
+
+Returns a promise that resolves when the controller is fully initialized. Internally waits for three concurrent operations to complete:
+
+1. The service worker sends its `ready` acknowledgment over the `MessageChannel`.
+2. The Scramjet WASM binary has been fetched and loaded.
+3. Previously persisted cookies have been loaded from IndexedDB.
+
+Always await `wait()` before calling `createFrame()` or otherwise using the controller.
+
+```ts
+await controller.wait();
+// Safe to create frames now
+const frame = controller.createFrame(iframeEl);
+```
+
+---
+
+### `createFrame()`
+
+```ts
+createFrame(element?: HTMLIFrameElement, options?: FrameOptions): Frame
+```
+
+Creates a new [`Frame`](/api/frame) and registers it with this controller. If `element` is omitted, a new detached `<iframe>` element is created automatically — you can insert it into the DOM whenever you are ready.
+
+<ParamField body="element" type="HTMLIFrameElement">
+  An existing `<iframe>` element to attach the frame to. If not provided, one is created via `document.createElement('iframe')`.
+</ParamField>
+
+<ParamField body="options" type="FrameOptions">
+  <Expandable title="FrameOptions fields">
+    <ParamField body="plugins" type="ManagedPlugin[]">
+      An array of `ManagedPlugin` instances to install on the new frame. Plugins are installed in order; all declared dependencies must be present in the same array or an error is thrown.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Returns:** A configured `Frame` instance whose `prefix` is `controller.prefix + frame.id + "/"`.
+
+<Warning>
+  Calling `createFrame()` before `wait()` resolves throws: `"Controller is not ready! Try awaiting controller.wait()"`.
+</Warning>
+
+```ts
+await controller.wait();
+
+const iframe = document.getElementById('proxy-frame') as HTMLIFrameElement;
+const frame = controller.createFrame(iframe, {
+  plugins: [new HttpCachePlugin()],
+});
+
+frame.go('https://example.com');
+```
+
+---
+
+### `setTransport()`
+
+```ts
+setTransport(transport: ProxyTransport): void
+```
+
+Replaces the active proxy transport for the controller and all currently registered frames. The new transport takes effect immediately for all subsequent requests — no restart is required.
+
+<ParamField body="transport" type="ProxyTransport" required>
+  The new transport instance to use. Must implement the `ProxyTransport` interface from `@mercuryworkshop/proxy-transports`.
+</ParamField>
+
+```ts
+import { EpoxyClient } from '@mercuryworkshop/epoxy-transport';
+
+const newTransport = new EpoxyClient({ wisp: 'wss://backup.example.com/wisp/' });
+controller.setTransport(newTransport);
+```
+
+---
+
+### `propagateCookieSync()`
+
+```ts
+async propagateCookieSync(
+  cookies: SerializedCookieSyncEntry[],
+  options?: CookieSyncOptions
+): Promise<void>
+```
+
+Sends a set of serialized cookie entries to the service worker so it can apply them to its internal cookie state. Called automatically by the frame's `fetchHandler`; you typically do not need to invoke this directly.
+
+<ParamField body="cookies" type="SerializedCookieSyncEntry[]" required>
+  Array of `{ url: string; cookie: string }` objects representing cookies to sync.
+</ParamField>
+
+<ParamField body="options" type="CookieSyncOptions">
+  Optional sync options. Set `options.clear = true` to clear all cookies in the service worker before applying the new set.
+</ParamField>
+
+---
+
+### `persistCookies()`
+
+```ts
+async persistCookies(): Promise<void>
+```
+
+Serializes the current `cookieJar` state and writes it to the browser's IndexedDB under the `__scramjet_controller` database. Also broadcasts a `BroadcastChannel` message so that other controller instances in other tabs can reload their cookie state. Called automatically after each cookie-setting network response.

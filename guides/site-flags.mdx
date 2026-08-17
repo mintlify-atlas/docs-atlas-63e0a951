@@ -1,0 +1,213 @@
+---
+title: 'Scramjet Feature Flags and Per-Site Configuration'
+sidebarTitle: 'Site Flags'
+description: 'Enable or disable Scramjet rewriter features globally with ScramjetFlags, or override them per URL pattern using siteFlags for site-specific compatibility fixes.'
+---
+
+Scramjet's rewriter is highly configurable through a boolean flag system. Every flag in `ScramjetFlags` maps to a distinct rewriter behavior — from source map generation and destructuring rewrites to synchronous XHR support and worker encapsulation. Global flags apply to every proxied page; `siteFlags` lets you surgically override any subset of flags for URLs that match a regex pattern. This two-level system means you can enable conservative production defaults globally while unlocking site-specific quirks only where they are needed.
+
+---
+
+## `ScramjetFlags` reference
+
+All flags are booleans. The defaults shown below match `defaultConfig` from `@mercuryworkshop/scramjet`.
+
+<ParamField path="sourcemaps" type="boolean" default="true">
+  Generate source maps for every rewritten JavaScript file. Source maps are
+  inlined as `//# sourceMappingURL` data URIs and allow browser DevTools to
+  display original (pre-rewrite) code in the Sources panel. Disable in
+  production if you want to reduce response size.
+</ParamField>
+
+<ParamField path="destructureRewrites" type="boolean" default="true">
+  Rewrite destructuring assignments that unpack properties from proxied objects.
+  Disabling this can slightly speed up rewriting at the cost of compatibility
+  with sites that destructure globals like `window` or `navigator`.
+</ParamField>
+
+<ParamField path="allowInvalidJs" type="boolean" default="true">
+  Pass through JavaScript files that fail to parse without throwing an error.
+  When disabled (`false`) the rewriter throws on syntax errors, which is useful
+  during development to catch malformed scripts early.
+</ParamField>
+
+<ParamField path="encapsulateWorkers" type="boolean" default="true">
+  Wrap Web Workers in the Scramjet context so that worker scripts are also
+  intercepted and rewritten. Disable for sites whose workers use APIs or
+  patterns that are incompatible with the Scramjet worker harness.
+</ParamField>
+
+<ParamField path="syncxhr" type="boolean" default="false">
+  Enable support for synchronous `XMLHttpRequest` calls. Synchronous XHR is
+  largely deprecated and can block the main thread, so it is off by default.
+  Enable only for sites that require it (for example, certain legacy analytics
+  libraries).
+</ParamField>
+
+<ParamField path="disableComputedWrap" type="boolean" default="false">
+  Disable the wrapping of computed property accesses (e.g. `obj[expr]`). This
+  can improve rewriter throughput for sites that use many computed properties,
+  but may break interceptors that rely on property-access hooks.
+</ParamField>
+
+<ParamField path="rewriterLogs" type="boolean" default="false">
+  Emit verbose logging from the rewriter to the service worker console. Useful
+  for diagnosing rewrite failures but produces a large volume of output — only
+  enable during debugging sessions.
+</ParamField>
+
+<ParamField path="captureErrors" type="boolean" default="false">
+  Catch and report errors thrown by the rewriter instead of letting them
+  propagate and potentially crash the page. Errors are logged to the console.
+  Enabled automatically by `defaultConfigDev`.
+</ParamField>
+
+<ParamField path="cleanErrors" type="boolean" default="false">
+  Strip Scramjet-internal frames from error stack traces before they reach the
+  proxied page. Makes errors look like they came from the original site rather
+  than from inside the proxy.
+</ParamField>
+
+<ParamField path="scramitize" type="boolean" default="false">
+  Enable an additional sandboxing pass that restricts access to certain
+  browser APIs within the proxied context. Experimental — may break sites that
+  rely on direct API access.
+</ParamField>
+
+<ParamField path="allowFailedIntercepts" type="boolean" default="false">
+  Continue script execution even if an intercept hook throws an error. By
+  default a failed intercept is fatal. Enable for sites that aggressively
+  test browser APIs in ways that are difficult to fully proxy.
+</ParamField>
+
+<ParamField path="debugTrampolines" type="boolean" default="false">
+  Emit debug information for the trampoline functions that Scramjet inserts
+  around intercepted calls. Enabled by `defaultConfigDev`. Adds overhead —
+  keep disabled in production.
+</ParamField>
+
+<ParamField path="debugSourceURL" type="boolean" default="false">
+  Append `//# sourceURL=` comments to every rewritten script so DevTools
+  assigns a human-readable name to each script. Enabled by `defaultConfigDev`.
+</ParamField>
+
+---
+
+## Per-site flags with `siteFlags`
+
+`siteFlags` is a `Record<string, Partial<ScramjetFlags>>` on `ScramjetConfig`. Each key is a **JavaScript regex pattern string** tested against the full `url.href` of every request. When a URL matches, the flags in the corresponding value object override the global `flags` for that request only — all other flags retain their global values.
+
+The matching logic is implemented in the `flagEnabled` utility:
+
+```ts
+// From @mercuryworkshop/scramjet shared/index.ts
+export function flagEnabled(
+  flag: keyof ScramjetFlags,
+  context: ScramjetContext,
+  url: URL
+): boolean {
+  const value = context.config.flags[flag];
+  for (const regex in context.config.siteFlags) {
+    const partialflags = context.config.siteFlags[regex];
+    if (new RegExp(regex).test(url.href) && flag in partialflags) {
+      return partialflags[flag];
+    }
+  }
+  return value;
+}
+```
+
+<Warning>
+  `siteFlags` keys are **JavaScript regex strings**, not glob patterns or plain
+  substrings. A literal dot `.` matches *any* character. Always escape dots in
+  domain names with `\\.` (e.g. `'youtube\\.com'` instead of `'youtube.com'`)
+  to avoid accidentally matching unintended hostnames.
+</Warning>
+
+### Example: Per-site overrides
+
+```ts
+const controller = new Controller({
+  serviceworker: sw,
+  transport,
+  scramjetConfig: {
+    flags: {
+      sourcemaps: true,
+    },
+    siteFlags: {
+      // Disable worker encapsulation only on YouTube
+      'youtube\\.com': {
+        encapsulateWorkers: false,
+      },
+      // Allow failed intercepts on Discord without affecting other sites
+      'discord\\.com': {
+        allowFailedIntercepts: true,
+      },
+    },
+  },
+});
+```
+
+### Using `flagEnabled` directly
+
+If you are building a plugin or custom rewriter hook, you can call `flagEnabled` yourself to respect both global and site-specific configuration:
+
+```ts
+import { flagEnabled } from '@mercuryworkshop/scramjet';
+
+// Inside a rewriter hook with access to context and the current URL:
+if (flagEnabled('captureErrors', context, url)) {
+  // safe error-handling path
+}
+```
+
+---
+
+## Common flag recipes
+
+<Tabs>
+  <Tab title="Production">
+    ```ts
+    scramjetConfig: {
+      flags: {
+        sourcemaps: false,      // smaller responses
+        captureErrors: true,    // don't let rewriter errors crash pages
+        allowInvalidJs: true,   // tolerate minified / unconventional JS
+      },
+    }
+    ```
+  </Tab>
+  <Tab title="Development">
+    ```ts
+    import { defaultConfigDev } from '@mercuryworkshop/scramjet';
+
+    // defaultConfigDev already sets:
+    // captureErrors: true
+    // debugTrampolines: true
+    // debugSourceURL: true
+    // allowInvalidJs: false  ← surfaces parse errors early
+    scramjetConfig: defaultConfigDev,
+    ```
+  </Tab>
+  <Tab title="Compatibility fix">
+    ```ts
+    scramjetConfig: {
+      flags: { sourcemaps: true },
+      siteFlags: {
+        'example\\.com': {
+          allowFailedIntercepts: true,
+          encapsulateWorkers: false,
+          syncxhr: true,
+        },
+      },
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+  Enable `captureErrors: true` in production deployments. Without it, a single
+  unexpected syntax pattern in a proxied page can throw an uncaught error from
+  the rewriter and leave the page blank. With `captureErrors` on, the error is
+  logged but the page continues to load.
+</Tip>

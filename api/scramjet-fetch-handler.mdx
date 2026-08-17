@@ -1,0 +1,309 @@
+---
+title: "ScramjetFetchHandler — Proxy Fetch Pipeline API"
+sidebarTitle: "FetchHandler"
+description: "API reference for ScramjetFetchHandler, which manages the fetch pipeline through intercept, request, preresponse, and response hook stages."
+---
+
+`ScramjetFetchHandler` is the engine that processes every proxied network request. It receives a raw `ScramjetFetchRequest` from the service worker, runs the request through a four-stage hook pipeline, performs URL parsing and header rewriting, dispatches the request through the configured transport, handles cookie synchronization, rewrites the response body, and finally returns a `ScramjetFetchResponse` to the service worker to deliver to the page.
+
+In normal usage, `ScramjetFetchHandler` lives on [`Frame.fetchHandler`](/api/frame#fetchhandler) and is created automatically by `createFrame()`. You interact with it primarily through the hooks exposed on [`frame.hooks.fetch`](/api/frame#hooks-reference).
+
+## Import
+
+```ts
+import { ScramjetFetchHandler } from '@mercuryworkshop/scramjet';
+import type {
+  ScramjetFetchRequest,
+  ScramjetFetchResponse,
+  FetchHooks,
+} from '@mercuryworkshop/scramjet';
+```
+
+---
+
+## Constructor
+
+```ts
+new ScramjetFetchHandler(init: FetchHandlerInit)
+```
+
+Creates a new fetch handler. In practice this is called for you inside `controller.createFrame()`, but the constructor is public and can be used to build a handler independently (e.g., in a service-worker-side test harness).
+
+### `FetchHandlerInit` parameters
+
+<ParamField body="transport" type="ProxyTransport" required>
+  The proxy transport implementation used to make upstream network requests. Must implement the `ProxyTransport` interface from `@mercuryworkshop/proxy-transports`.
+</ParamField>
+
+<ParamField body="context" type="ScramjetContext" required>
+  The `ScramjetContext` object containing the merged `ScramjetConfig`, the frame's URL `prefix`, the shared `CookieJar`, and the codec/inject-script interface. See [`Frame.context`](/api/frame#context).
+</ParamField>
+
+<ParamField body="crossOriginIsolated" type="boolean">
+  Whether the controller page was loaded in a cross-origin isolated context (`self.crossOriginIsolated`). Affects which response header handling paths are taken. Defaults to `false`.
+</ParamField>
+
+<ParamField body="sendSetCookie" type="(cookies: CookieSyncEntry[], options?: CookieSyncOptions) => Promise<void>" required>
+  A callback invoked whenever an upstream response sets cookies. The handler collects all `Set-Cookie` headers, parses them, and calls this function so the controller can persist and propagate the cookies to the service worker. Provided automatically by `createFrame()`.
+</ParamField>
+
+<ParamField body="fetchBlobUrl" type="(url: string) => Promise<BareResponse>" required>
+  A callback used to fetch `blob:` URLs that the proxied page creates. Provided automatically by `createFrame()` using a native `fetch()` call wrapped in `BareResponse.fromNativeResponse`.
+</ParamField>
+
+<ParamField body="fetchDataUrl" type="(url: string) => Promise<BareResponse>" required>
+  A callback used to fetch `data:` URLs embedded in proxied content. Provided automatically by `createFrame()`.
+</ParamField>
+
+---
+
+## Properties
+
+<ResponseField name="client" type="BareCompatibleClient">
+  The `BareCompatibleClient` instance wrapping the `ProxyTransport`. This is the object that actually calls `transport.request()` to make upstream HTTP requests. Exposed so that hook handlers can access the client directly in the `request` hook stage.
+</ResponseField>
+
+<ResponseField name="crossOriginIsolated" type="boolean">
+  Reflects the `crossOriginIsolated` value passed at construction time.
+</ResponseField>
+
+<ResponseField name="context" type="ScramjetContext">
+  The `ScramjetContext` this handler was initialized with. Contains the config, prefix, cookie jar, and interface callbacks used throughout the rewriting pipeline.
+</ResponseField>
+
+<ResponseField name="hooks" type="{ rewriter: { html: TapInstance }, fetch: TapInstance<FetchHooks> }">
+  The hook registry. `hooks.fetch` provides the four fetch-pipeline hook stages (see below). `hooks.rewriter.html` provides pre/post hooks around HTML rewriting. [`Frame.hooks.fetch`](/api/frame#hooks-reference) is a direct alias to `hooks.fetch`.
+</ResponseField>
+
+---
+
+## Key Method
+
+### `handleFetch()`
+
+```ts
+async handleFetch(request: ScramjetFetchRequest): Promise<ScramjetFetchResponse>
+```
+
+Executes the complete fetch pipeline for a single proxied request and returns the final rewritten response.
+
+<Note>
+  `handleFetch()` is called internally by the `Controller` each time the service worker forwards a request. **Do not call it directly** in application code — attach hooks instead to intercept and modify requests and responses at the appropriate pipeline stage.
+</Note>
+
+#### Pipeline stages
+
+The pipeline runs in the following order:
+
+1. **Parse** — Decodes the proxied URL, resolves the real destination, classifies the request destination type, and builds a `ScramjetFetchParsed` object.
+2. **Intercept hooks** — Runs `hooks.fetch.intercept`. If any handler sets `props.response`, the pipeline is short-circuited and that response is returned immediately.
+3. **Rewrite request headers** — Strips Scramjet-internal headers, reconstructs `Referer`, `Origin`, `Sec-Fetch-*`, and other security headers to match what the upstream server expects.
+4. **Request hooks** — Runs `hooks.fetch.request`. Handlers may modify `props.url` and `props.init`, or set `props.earlyResponse` to skip the transport entirely.
+5. **Transport fetch** — Calls `client.request()` (or uses `earlyResponse`) to fetch the real resource upstream.
+6. **Cookie handling** — Extracts `Set-Cookie` headers from the upstream response, applies them to the `CookieJar`, and calls `sendSetCookie` to propagate them.
+7. **Preresponse hooks** — Runs `hooks.fetch.preresponse` with the raw `BareResponse` before any body transformation.
+8. **Rewrite response headers** — Removes CSP headers, strips `X-Frame-Options`, rewrites `Location` and `Content-Location` on redirects, and adjusts CORS headers.
+9. **Rewrite body** — Transforms the response body based on content type: HTML pages receive inject scripts and DOM rewrites; JavaScript is run through the AST rewriter; CSS URLs are rewritten; WebAssembly, images, and other binary types are passed through unchanged.
+10. **Response hooks** — Runs `hooks.fetch.response` with the fully rewritten `ScramjetFetchResponse`. Handlers may replace `props.response` with a custom response.
+
+---
+
+## `ScramjetFetchRequest` type
+
+The input to `handleFetch()`, constructed by the `Controller` from the service-worker's `FetchEvent`.
+
+<ResponseField name="rawUrl" type="URL">
+  The full proxied URL as received by the service worker, including the Scramjet prefix and encoded real URL. The handler decodes this to obtain the real destination.
+</ResponseField>
+
+<ResponseField name="rawClientUrl" type="URL | undefined">
+  The proxied URL of the page that initiated the request, decoded from the `Referer`-equivalent header sent by the service worker. Used to reconstruct accurate `Sec-Fetch-Site` classification.
+</ResponseField>
+
+<ResponseField name="rawReferrer" type="string | null">
+  The raw `Referer` header value as received by the service worker, before any decoding. May be a proxied URL or an empty string.
+</ResponseField>
+
+<ResponseField name="rawDestination" type="RequestDestination">
+  The browser's `request.destination` value (`"document"`, `"script"`, `"style"`, `"image"`, etc.). May be overridden by a Scramjet-internal `$dest` parameter embedded in the proxied URL.
+</ResponseField>
+
+<ResponseField name="method" type="string">
+  The HTTP method (`"GET"`, `"POST"`, `"PUT"`, etc.).
+</ResponseField>
+
+<ResponseField name="mode" type="RequestMode">
+  The browser's `request.mode` (`"cors"`, `"no-cors"`, `"navigate"`, `"same-origin"`).
+</ResponseField>
+
+<ResponseField name="referrer" type="string">
+  The browser's `request.referrer` string (may be `"about:client"`, `"no-referrer"`, or a URL).
+</ResponseField>
+
+<ResponseField name="body" type="BodyType | null">
+  The request body. Can be a `string`, `ArrayBuffer`, `Blob`, `ReadableStream<Uint8Array>`, or `null` for bodyless methods.
+</ResponseField>
+
+<ResponseField name="cache" type="RequestCache">
+  The browser's cache mode for this request (`"default"`, `"no-store"`, `"reload"`, `"no-cache"`, `"force-cache"`, `"only-if-cached"`).
+</ResponseField>
+
+<ResponseField name="clientId" type="string">
+  The service worker `FetchEvent.clientId` that originated this request. Used to track per-client navigation history for `Sec-Fetch-Site` and referrer policy calculations.
+</ResponseField>
+
+<ResponseField name="initialHeaders" type="ScramjetHeaders">
+  The request headers as sent by the browser to the service worker, wrapped in a `ScramjetHeaders` instance. The handler will rewrite these before forwarding to the transport.
+</ResponseField>
+
+---
+
+## `ScramjetFetchResponse` type
+
+The output of `handleFetch()`, returned to the service worker which delivers it to the page.
+
+<ResponseField name="body" type="BodyType">
+  The (possibly rewritten) response body. May be a `string`, `ArrayBuffer`, `Blob`, or `ReadableStream<Uint8Array>`.
+</ResponseField>
+
+<ResponseField name="headers" type="ScramjetHeaders">
+  The rewritten response headers. CSP, `X-Frame-Options`, and similar headers have been removed or modified. Serialize back to raw headers with `.toRawHeaders()`.
+</ResponseField>
+
+<ResponseField name="status" type="number">
+  The HTTP status code from the upstream response (e.g. `200`, `301`, `404`).
+</ResponseField>
+
+<ResponseField name="statusText" type="string">
+  The HTTP status text from the upstream response (e.g. `"OK"`, `"Not Found"`).
+</ResponseField>
+
+---
+
+## Hooks on `fetchHandler.hooks.fetch`
+
+All four hook stages are `TapInstance` objects. Register handlers by calling `.use(handler)`. Handlers receive a `{ context, props }` object and may return `void` or a `Promise<void>`.
+
+<Expandable title="intercept — short-circuit before the network">
+  Fires after URL parsing but before any network activity.
+
+  **Context:**
+  - `request: ScramjetFetchRequest` — the original request
+  - `parsed: ScramjetFetchParsed` — the decoded URL and metadata
+
+  **Props:**
+  - `response?: ScramjetFetchResponse` — set this to bypass the entire pipeline
+
+  ```ts
+  frame.fetchHandler.hooks.fetch.intercept.use(({ context, props }) => {
+    if (context.parsed.url.href.includes('analytics')) {
+      // Block analytics requests
+      props.response = {
+        body: '',
+        headers: new ScramjetHeaders(),
+        status: 200,
+        statusText: 'OK',
+      };
+    }
+  });
+  ```
+</Expandable>
+
+<Expandable title="request — modify before transport dispatch">
+  Fires after header rewriting, just before calling `client.request()`.
+
+  **Context:**
+  - `request: ScramjetFetchRequest`
+  - `parsed: ScramjetFetchParsed`
+  - `client: BareCompatibleClient` — the transport client
+
+  **Props:**
+  - `url: URL` — the decoded real URL (mutable)
+  - `init: BareRequestInit` — headers, method, body (mutable)
+  - `earlyResponse?: BareResponse` — set to skip transport entirely
+
+  ```ts
+  frame.fetchHandler.hooks.fetch.request.use(({ props }) => {
+    // Inject a custom header on every outgoing request
+    props.init.headers.set('X-Custom-Proxy', '1');
+  });
+  ```
+</Expandable>
+
+<Expandable title="preresponse — inspect raw upstream response">
+  Fires after the transport returns a response, before body rewriting.
+
+  **Context:**
+  - `request: ScramjetFetchRequest`
+  - `parsed: ScramjetFetchParsed`
+
+  **Props:**
+  - `response: BareResponse` — the raw upstream response (replaceable)
+
+  ```ts
+  frame.fetchHandler.hooks.fetch.preresponse.use(({ props }) => {
+    if (props.response.status >= 500) {
+      console.warn('Upstream server error:', props.response.status);
+    }
+  });
+  ```
+</Expandable>
+
+<Expandable title="response — replace or augment the final response">
+  Fires after the response body has been fully rewritten. This is the last opportunity to modify the response before it is returned to the service worker.
+
+  **Context:**
+  - `request: ScramjetFetchRequest`
+  - `parsed: ScramjetFetchParsed`
+
+  **Props:**
+  - `response: ScramjetFetchResponse` — the fully rewritten response (replaceable)
+
+  ```ts
+  frame.fetchHandler.hooks.fetch.response.use(({ props }) => {
+    // Stamp a response header so the page can detect the proxy
+    props.response.headers.set('X-Scramjet-Frame', frame.id);
+  });
+  ```
+</Expandable>
+
+---
+
+## Full example
+
+```ts
+import { Controller } from '@mercuryworkshop/scramjet-controller';
+
+await controller.wait();
+const frame = controller.createFrame(iframeEl);
+
+const handler = frame.fetchHandler;
+
+// Block third-party tracking scripts
+handler.hooks.fetch.intercept.use(({ context, props }) => {
+  const url = context.parsed.url.href;
+  if (/doubleclick\.net|googlesyndication\.com/.test(url)) {
+    props.response = {
+      body: '/* blocked */',
+      headers: new ScramjetHeaders([['content-type', 'application/javascript']]),
+      status: 200,
+      statusText: 'OK',
+    };
+  }
+});
+
+// Log all upstream errors
+handler.hooks.fetch.preresponse.use(({ context, props }) => {
+  if (props.response.status >= 400) {
+    console.log(
+      `[proxy] ${props.response.status} ${context.request.method} ${context.parsed.url.href}`
+    );
+  }
+});
+
+frame.go('https://example.com');
+```
+
+<Note>
+  For custom behavior that applies at the controller level (e.g., across all frames), attach hooks after calling `createFrame()` on each frame, or write a `ManagedPlugin` that installs hooks in its `install(frame)` method so they are set up automatically for every frame that uses the plugin.
+</Note>

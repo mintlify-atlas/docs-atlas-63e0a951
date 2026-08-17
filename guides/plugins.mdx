@@ -1,0 +1,209 @@
+---
+title: "Building Custom Scramjet Plugins with ManagedPlugin"
+sidebarTitle: "Custom Plugins"
+description: "Create custom Scramjet plugins by extending ManagedPlugin, register them with a Frame, tap into lifecycle hooks, and declare plugin dependencies."
+---
+
+Scramjet's plugin system gives you a structured, lifecycle-aware way to extend proxy behavior. Every plugin is a class that extends `ManagedPlugin`, declares its dependencies upfront, and receives a `Frame` reference when the proxy initializes — from that point it can tap any of Scramjet's hooks to intercept, modify, or observe requests, responses, and window events.
+
+## What Is a Plugin?
+
+A **plugin** is a class that extends `ManagedPlugin` (exported from `@mercuryworkshop/scramjet-controller`). `ManagedPlugin` itself extends the base `Plugin` class from `@mercuryworkshop/scramjet`. The key responsibilities of a plugin are:
+
+- Declare a **unique name** and a list of **dependencies** (other plugin names that must be present).
+- Override **`install(frame)`** to tap hooks and set up any per-frame state.
+- Use `this.tap(hook, callback)` (inherited from `Plugin`) to register callbacks without needing to hold a reference to the `Tap` singleton.
+
+When you call `controller.createFrame(iframe, { plugins })`, Scramjet verifies all declared dependencies are satisfied, then calls `install(frame)` on each plugin in order.
+
+## The `ManagedPlugin` Class
+
+```ts
+import { ManagedPlugin } from '@mercuryworkshop/scramjet-controller';
+import type { Frame } from '@mercuryworkshop/scramjet-controller';
+
+class ManagedPlugin extends Plugin {
+  frame: Frame; // set automatically during install()
+
+  constructor(name: string, dependencies: string[]);
+
+  // Override this — it is called once per Frame at construction time.
+  install(frame: Frame): void;
+}
+```
+
+<Note>
+  `ManagedPlugin.install()` sets `this.frame` before your override logic runs — always call `super.install(frame)` at the top of your own `install()` if you override it, so the `frame` property is correctly wired up.
+</Note>
+
+## Creating a Plugin
+
+<Steps>
+  <Step title="Extend ManagedPlugin">
+    Create a new class, call `super(name, dependencies)` from your constructor, and override `install`.
+
+    ```ts
+    import { ManagedPlugin } from '@mercuryworkshop/scramjet-controller';
+    import type { Frame } from '@mercuryworkshop/scramjet-controller';
+
+    export class MyPlugin extends ManagedPlugin {
+      constructor() {
+        super('my-plugin', []); // name, dependencies
+      }
+
+      install(frame: Frame): void {
+        super.install(frame);
+
+        // Tap into the fetch response hook
+        this.tap(frame.hooks.fetch.response, (context, props) => {
+          console.log('Response for:', context.request.rawUrl.href);
+          console.log('Status:', props.response.status);
+        });
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Register the plugin with a Frame">
+    Pass an instance of your plugin in the `plugins` array when calling `createFrame`. Scramjet installs all plugins at Frame construction time.
+
+    ```ts
+    import { MyPlugin } from './my-plugin';
+
+    const frame = controller.createFrame(iframe, {
+      plugins: [new MyPlugin()],
+    });
+    ```
+  </Step>
+
+  <Step title="Navigate to a URL">
+    After the frame is created and the controller is ready, call `frame.go()` to load a proxied page. Your plugin's hooks will fire on every request.
+
+    ```ts
+    await controller.wait();
+    frame.go('https://example.com');
+    ```
+  </Step>
+</Steps>
+
+## Declaring Plugin Dependencies
+
+If your plugin relies on functionality from another plugin, declare that plugin's name in the `dependencies` array passed to `super()`. Scramjet checks at Frame creation time that every declared dependency is present in the `plugins` array — if one is missing it throws immediately, before any `install()` calls happen.
+
+```ts
+export class MyPlugin extends ManagedPlugin {
+  constructor() {
+    // Requires 'url-watcher' to already be installed on the same Frame
+    super('my-plugin', ['url-watcher']);
+  }
+
+  install(frame: Frame): void {
+    super.install(frame);
+
+    // Safely retrieve the other plugin by name
+    const urlWatcher = frame.getPlugin<UrlWatcherPlugin>('url-watcher');
+    console.log('Got url-watcher plugin:', urlWatcher);
+  }
+}
+```
+
+<Warning>
+  Circular dependencies — where plugin A declares B as a dependency and plugin B declares A — cause an error at Frame creation time. Scramjet detects the cycle during callback sort and will throw before any plugin is installed. Design your dependency graph as a directed acyclic graph (DAG).
+</Warning>
+
+### Retrieving a Plugin at Runtime
+
+Use `frame.getPlugin<T>(name)` anywhere you have a `Frame` reference. It throws if the named plugin is not found, so you can rely on the return type being non-null.
+
+```ts
+const urlWatcher = frame.getPlugin<UrlWatcherPlugin>('url-watcher');
+```
+
+## Tap Ordering
+
+Beyond declaring install-time dependencies, you can control the **execution order of hook callbacks** across plugins using `TapOrder`. This is useful when two plugins tap the same hook and one must run before or after the other.
+
+<Tabs>
+  <Tab title="Global order via constructor">
+    Pass `tapOrder` through the second argument of the base `Plugin` constructor (available if you extend `Plugin` directly rather than `ManagedPlugin`). Every `this.tap()` call will inherit these defaults.
+
+    ```ts
+    import { Plugin } from '@mercuryworkshop/scramjet';
+    import { Tap, type TapOrder } from '@mercuryworkshop/scramjet';
+
+    const order: TapOrder = { before: ['other-plugin'], after: ['base-plugin'] };
+    const plugin = new Plugin('my-plugin', order);
+    ```
+  </Tab>
+  <Tab title="Per-tap override">
+    Pass an explicit `TapOrder` as the third argument to `this.tap()` to override the plugin's global order for that specific hook callback.
+
+    ```ts
+    install(frame: Frame): void {
+      super.install(frame);
+
+      // This callback runs before 'logger-plugin' on this hook only
+      this.tap(
+        frame.hooks.fetch.response,
+        (context, props) => { /* ... */ },
+        { before: ['logger-plugin'] }
+      );
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Plugins are installed in the order they appear in the `plugins` array — Scramjet does **not** topologically sort plugins by their dependencies before installation. Make sure you list plugins in the correct order (dependencies before dependents) when calling `createFrame`.
+</Note>
+
+## Full Example
+
+The following plugin injects a custom response header on every proxied fetch reply, demonstrating all the concepts above.
+
+<CodeGroup>
+```ts my-header-plugin.ts
+import { ManagedPlugin } from '@mercuryworkshop/scramjet-controller';
+import type { Frame } from '@mercuryworkshop/scramjet-controller';
+
+export class MyHeaderPlugin extends ManagedPlugin {
+  private headerName: string;
+  private headerValue: string;
+
+  constructor(headerName: string, headerValue: string) {
+    super('my-header-plugin', []);
+    this.headerName = headerName;
+    this.headerValue = headerValue;
+  }
+
+  install(frame: Frame): void {
+    super.install(frame);
+
+    this.tap(frame.hooks.fetch.response, (context, props) => {
+      props.response.headers.set(this.headerName, this.headerValue);
+      console.log(
+        `[my-header-plugin] Set ${this.headerName} on`,
+        context.request.rawUrl.href
+      );
+    });
+  }
+}
+```
+
+```ts main.ts
+import { Controller } from '@mercuryworkshop/scramjet-controller';
+import { MyHeaderPlugin } from './my-header-plugin';
+
+const controller = new Controller({ /* ... */ });
+await controller.wait();
+
+const iframe = document.querySelector('iframe')!;
+const frame = controller.createFrame(iframe, {
+  plugins: [
+    new MyHeaderPlugin('X-Proxied-By', 'Scramjet'),
+  ],
+});
+
+frame.go('https://example.com');
+```
+</CodeGroup>

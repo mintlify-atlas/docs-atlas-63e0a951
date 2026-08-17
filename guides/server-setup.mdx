@@ -1,0 +1,214 @@
+---
+title: "Setting Up the Scramjet Proxy Server"
+sidebarTitle: "Server Setup"
+description: "Configure a Node.js HTTP server to serve Scramjet assets and proxy WebSocket upgrades using the proxy-bootstrap package and the bootstrap() function."
+---
+
+The `@mercuryworkshop/proxy-bootstrap` package is the fastest way to get a fully-functional Scramjet proxy server running. A single call to `bootstrap()` handles downloading the right versions of the scramjet rewriter, controller, utils, and transport packages from the npm registry, caches them to disk, and wires up two routing helpers — `routeRequest` and `routeUpgrade` — that you attach to any Node.js HTTP server. Whether you prefer Express, Fastify, or plain `node:http`, the integration is a handful of lines.
+
+## Installation
+
+```bash
+npm install @mercuryworkshop/proxy-bootstrap
+```
+
+## The `bootstrap()` Function
+
+`bootstrap(cfg?)` is an async function that prepares the server side of the proxy. On first run it resolves the latest patch release within each package's pinned major version, downloads tarballs from the npm registry, and unpacks them into a local `.downloads` directory beside the package itself. On subsequent runs it compares the already-cached version against the resolved latest — if they match, the download is skipped entirely.
+
+```ts
+import { bootstrap } from '@mercuryworkshop/proxy-bootstrap';
+
+const { routeRequest, routeUpgrade } = await bootstrap();
+```
+
+You can pass a partial `BootstrapOptions` object to override any default path or pin a specific version:
+
+```ts
+const { routeRequest, routeUpgrade } = await bootstrap({
+  transport: 'epoxy',
+  wispPath: '/wisp/',
+});
+```
+
+## Configuration Reference
+
+Every field in `BootstrapOptions` is optional — the defaults shown below work for most deployments.
+
+### Core Options
+
+<ParamField path="transport" type='"epoxy" | "libcurl"' default='"libcurl"'>
+  Selects which transport client is downloaded and served to the browser. `"libcurl"` uses a libcurl WASM build; `"epoxy"` uses a Rust-based transport. Both tunnel traffic through Wisp WebSockets.
+</ParamField>
+
+<ParamField path="swPath" type="string" default='"/sw.js"'>
+  The URL path at which the service worker script is served. The server generates this file dynamically — it imports the scramjet controller SW bundle and registers a fetch event listener.
+</ParamField>
+
+<ParamField path="wispPath" type="string" default='"/wisp/"'>
+  The WebSocket upgrade path used by the Wisp server. All transport clients connect here to tunnel HTTP and WebSocket traffic. Must match the value the client is configured with.
+</ParamField>
+
+### Scramjet Asset Paths
+
+<ParamField path="scramjetBundlePath" type="string" default='"/scram/scramjet.js"'>
+  URL path for the main scramjet rewriter JavaScript bundle.
+</ParamField>
+
+<ParamField path="scramjetWasmPath" type="string" default='"/scram/scramjet.wasm"'>
+  URL path for the scramjet WebAssembly binary. Served with `application/wasm` content-type.
+</ParamField>
+
+<ParamField path="scramjetUtilsBundlePath" type="string" default='"/scram/scramjet-utils.js"'>
+  URL path for the scramjet utilities bundle, required for certain rewriting operations.
+</ParamField>
+
+### Controller Asset Paths
+
+<ParamField path="scramjetControllerApiPath" type="string" default='"/controller/controller.api.js"'>
+  URL path for the controller API script loaded in the main browser context.
+</ParamField>
+
+<ParamField path="scramjetControllerInjectPath" type="string" default='"/controller/controller.inject.js"'>
+  URL path for the script injected into every proxied page frame.
+</ParamField>
+
+<ParamField path="scramjetControllerSwPath" type="string" default='"/controller/controller.sw.js"'>
+  URL path for the controller's service worker companion script, imported inside `swPath`.
+</ParamField>
+
+### Transport Client Paths
+
+<ParamField path="epoxyClientPath" type="string" default='"/clients/epoxy-client.js"'>
+  URL path for the Epoxy transport client bundle. Only fetched by the browser when `transport` is `"epoxy"`.
+</ParamField>
+
+<ParamField path="libcurlClientPath" type="string" default='"/clients/libcurl-client.js"'>
+  URL path for the libcurl WASM transport client bundle. Only fetched by the browser when `transport` is `"libcurl"`.
+</ParamField>
+
+<ParamField path="bareClientPath" type="string" default='"/clients/bare-client.js"'>
+  URL path reserved for the Bare transport client. The Bare transport is not yet fully implemented.
+</ParamField>
+
+### Bootstrap Init Path
+
+<ParamField path="bootstrapInitPath" type="string" default='"/bootstrap-init.js"'>
+  URL path for the dynamically-generated bootstrap init script. This script exposes `initBootstrap()` to your page, which registers the service worker and returns a `Controller`. Include it via a `<script>` tag or dynamic import in your front-end.
+</ParamField>
+
+### Version Pins
+
+All version pins are optional. When omitted, `bootstrap()` resolves the latest patch release within each package's pinned major version.
+
+<ParamField path="scramjetVersionPin" type="string">
+  Exact version string for `@mercuryworkshop/scramjet` (e.g. `"0.7.2"`). Takes precedence over automatic resolution.
+</ParamField>
+
+<ParamField path="scramjetControllerVersionPin" type="string">
+  Exact version pin for `@mercuryworkshop/scramjet-controller`.
+</ParamField>
+
+<ParamField path="scramjetUtilsVersionPin" type="string">
+  Exact version pin for `@mercuryworkshop/scramjet-utils`.
+</ParamField>
+
+<ParamField path="epoxyTransportVersionPin" type="string">
+  Exact version pin for `@mercuryworkshop/epoxy-transport`.
+</ParamField>
+
+<ParamField path="libcurlTransportVersionPin" type="string">
+  Exact version pin for `@mercuryworkshop/libcurl-transport`.
+</ParamField>
+
+## Routing Helpers
+
+`bootstrap()` returns two functions you integrate into your HTTP server:
+
+| Function | Signature | Purpose |
+|---|---|---|
+| `routeRequest` | `(req, res) => boolean` | Handles GET requests for all Scramjet assets. Returns `true` if the request was handled. |
+| `routeUpgrade` | `(req, socket, head) => boolean` | Handles WebSocket upgrade requests for Wisp. Returns `true` if the upgrade was accepted. |
+
+Both functions return `false` when the incoming request does not belong to the proxy, so you can safely compose them with your existing application logic.
+
+## Integration Examples
+
+<Tabs>
+  <Tab title="Express">
+    The recommended approach for most projects. `routeRequest` runs before your app middleware and short-circuits handled paths:
+
+    ```js
+    import http from 'node:http';
+    import express from 'express';
+    import { bootstrap } from '@mercuryworkshop/proxy-bootstrap';
+
+    const { routeRequest, routeUpgrade } = await bootstrap();
+
+    const app = express();
+
+    // Let Scramjet handle its own asset paths first
+    app.use((req, res, next) => {
+      if (routeRequest(req, res)) return;
+      next();
+    });
+
+    // Serve your own static files after
+    app.use(express.static('public'));
+
+    const server = http.createServer(app);
+
+    // WebSocket upgrades must be handled on the raw server
+    server.on('upgrade', routeUpgrade);
+
+    server.listen(3030, () => {
+      console.log('Proxy running on http://localhost:3030');
+    });
+    ```
+  </Tab>
+  <Tab title="Vanilla Node.js">
+    No framework required — attach the helpers directly to the native `http.Server`:
+
+    ```js
+    import http from 'node:http';
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import { bootstrap } from '@mercuryworkshop/proxy-bootstrap';
+
+    const { routeRequest, routeUpgrade } = await bootstrap();
+
+    const server = http.createServer((req, res) => {
+      // Let Scramjet serve its own assets
+      if (routeRequest(req, res)) return;
+
+      // Fall back to your own static file serving
+      const filePath = path.join('public', req.url === '/' ? 'index.html' : req.url);
+      fs.readFile(filePath, (err, data) => {
+        if (err) {
+          res.writeHead(404);
+          res.end('Not found');
+          return;
+        }
+        res.writeHead(200);
+        res.end(data);
+      });
+    });
+
+    server.on('upgrade', (req, socket, head) => {
+      routeUpgrade(req, socket, head);
+    });
+
+    server.listen(3030, () => {
+      console.log('Proxy running on http://localhost:3030');
+    });
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  The `routeUpgrade` handler is **required** for the proxy to function. Without it, the Wisp WebSocket server never starts, and the transport client in the browser cannot make any requests through the proxy. Always attach it to your HTTP server's `"upgrade"` event.
+</Note>
+
+<Tip>
+  Pin your package versions using `scramjetVersionPin` and `scramjetControllerVersionPin` in production to ensure builds are reproducible and avoid unexpected breakage from upstream releases. For example: `await bootstrap({ scramjetControllerVersionPin: '0.3.1' })`.
+</Tip>

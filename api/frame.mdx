@@ -1,0 +1,296 @@
+---
+title: "Frame — Scramjet Proxied IFrame API"
+sidebarTitle: "Frame"
+description: "API reference for the Frame class: go(), back(), forward(), reload(), hooks, getPlugin(), and the context and fetchHandler properties."
+---
+
+A `Frame` represents a single proxied browsing context — essentially a managed `<iframe>` whose network traffic is intercepted by the Scramjet service worker and rewritten through the proxy pipeline. Each frame owns its own URL namespace, fetch pipeline, plugin set, and lifecycle hooks, while sharing the parent controller's cookie jar and transport.
+
+<Note>
+  `Frame` instances are created exclusively via [`controller.createFrame()`](/api/controller#createframe) and are never instantiated directly. Import types from `@mercuryworkshop/scramjet-controller`.
+</Note>
+
+```ts
+import type { Frame, FrameOptions, ManagedPlugin } from '@mercuryworkshop/scramjet-controller';
+```
+
+---
+
+## Creating a Frame
+
+```ts
+await controller.wait();
+
+const iframe = document.getElementById('proxy-iframe') as HTMLIFrameElement;
+const frame = controller.createFrame(iframe, {
+  plugins: [new HttpCachePlugin()],
+});
+
+// Navigate immediately after creation
+frame.go('https://example.com');
+```
+
+### `FrameOptions`
+
+<ParamField body="plugins" type="ManagedPlugin[]">
+  An array of `ManagedPlugin` instances to install on this frame. Plugins are installed in the order provided. Each plugin's declared `dependencies` array must name other plugins present in the same array — if a dependency is missing an error is thrown at frame creation time.
+</ParamField>
+
+---
+
+## Properties
+
+<ResponseField name="id" type="string">
+  A randomly generated 8-character alphanumeric identifier for this frame, unique within its controller. Used as part of the frame's URL prefix.
+</ResponseField>
+
+<ResponseField name="prefix" type="string">
+  The URL namespace for this frame: `controller.prefix + id + "/"`. All service-worker requests whose path begins with this prefix are dispatched to this frame's `fetchHandler`. For example, `/~/sj/ab12cd34/ef56gh78/`.
+</ResponseField>
+
+<ResponseField name="fetchHandler" type="ScramjetFetchHandler">
+  The [`ScramjetFetchHandler`](/api/scramjet-fetch-handler) instance that drives the full fetch pipeline for this frame — from header rewriting and transport dispatch, through cookie handling and body rewriting. Hooks are exposed on `frame.hooks.fetch` as a convenience alias. See [ScramjetFetchHandler](/api/scramjet-fetch-handler) for the complete pipeline reference.
+</ResponseField>
+
+<ResponseField name="element" type="HTMLIFrameElement">
+  The underlying `<iframe>` DOM element managed by this frame. The frame writes to `element.src` when `go()` is called, and calls into `element.contentWindow.history` for `back()`, `forward()`, and `reload()`.
+</ResponseField>
+
+<ResponseField name="controller" type="Controller">
+  A reference to the parent [`Controller`](/api/controller) that created this frame. Provides access to the shared `cookieJar`, `transport`, `config`, `scramjetConfig`, and `prefix`.
+</ResponseField>
+
+<ResponseField name="plugins" type="ManagedPlugin[]">
+  The array of installed `ManagedPlugin` instances on this frame, as supplied in `FrameOptions.plugins`. Retrieve a specific plugin by name using `getPlugin()`.
+</ResponseField>
+
+<ResponseField name="hooks" type="{ fetch: FetchHooks, init: FrameInitHooks, error: FrameErrorHooks }">
+  The lifecycle hook registry for this frame. See the [Hooks Reference](#hooks-reference) section below for details on each hook stage.
+</ResponseField>
+
+<ResponseField name="context" type="ScramjetContext">
+  The `ScramjetContext` object passed to the Scramjet rewriter for every request processed by this frame. It contains the merged `ScramjetConfig`, the frame's `prefix` as a `URL`, the shared `CookieJar`, and the codec/inject-script interface. The `context` property is a getter that reconstructs this object on every access to reflect any config changes.
+</ResponseField>
+
+---
+
+## Methods
+
+### `go()`
+
+```ts
+go(url: string): void
+```
+
+Navigates the frame to the given URL. The URL is encoded through the active codec and the frame's context to produce a proxied URL, then assigned to `element.src`.
+
+<ParamField body="url" type="string" required>
+  The real destination URL to navigate to (e.g. `"https://example.com/path"`). Do not pre-encode this value — the frame handles encoding internally.
+</ParamField>
+
+```ts
+frame.go('https://example.com');
+frame.go('https://news.ycombinator.com/');
+```
+
+---
+
+### `back()`
+
+```ts
+back(): void
+```
+
+Navigates one step backward in the frame's history. Equivalent to calling `element.contentWindow.history.back()`. Has no effect if the frame's history stack is at its earliest entry or the content window is not accessible.
+
+---
+
+### `forward()`
+
+```ts
+forward(): void
+```
+
+Navigates one step forward in the frame's history. Equivalent to calling `element.contentWindow.history.forward()`. Has no effect if the frame is already at the latest history entry.
+
+---
+
+### `reload()`
+
+```ts
+reload(): void
+```
+
+Reloads the current page inside the frame. Equivalent to calling `element.contentWindow.location.reload()`.
+
+---
+
+### `getPlugin()`
+
+```ts
+getPlugin<T extends ManagedPlugin>(name: string): T
+```
+
+Retrieves a plugin installed on this frame by its registered name.
+
+<ParamField body="name" type="string" required>
+  The name string that the plugin was registered with (matches the `name` property of the `ManagedPlugin` instance).
+</ParamField>
+
+**Returns:** The plugin cast to `T`. Throws `Error: "Plugin <name> not found"` if no plugin with that name exists on the frame.
+
+```ts
+const cachePlugin = frame.getPlugin<HttpCachePlugin>('http-cache');
+cachePlugin.clearCache();
+```
+
+---
+
+## Hooks Reference
+
+Hooks allow you to intercept and modify behavior at key points in the frame lifecycle. Each hook is a `TapInstance` — register a handler by calling `.use()` on it.
+
+<Note>
+  For a complete guide on using hooks, including how to register handlers and work with context/props objects, see the hooks guide. The descriptions below cover what each hook exposes and when it fires.
+</Note>
+
+### Fetch hooks — `frame.hooks.fetch`
+
+These hooks mirror the four stages of the [`ScramjetFetchHandler`](/api/scramjet-fetch-handler) pipeline. They are a direct alias to `frame.fetchHandler.hooks.fetch`.
+
+<Tabs>
+  <Tab title="intercept">
+    Fires before any network activity. Set `props.response` to a `ScramjetFetchResponse` to short-circuit the entire pipeline and return that response immediately — useful for implementing client-side caching or mocking.
+
+    **Context:** `request: ScramjetFetchRequest`, `parsed: ScramjetFetchParsed`
+
+    **Props:** `response?: ScramjetFetchResponse`
+
+    ```ts
+    frame.hooks.fetch.intercept.use(({ context, props }) => {
+      const cached = myCache.get(context.request.rawUrl.href);
+      if (cached) props.response = cached;
+    });
+    ```
+  </Tab>
+  <Tab title="request">
+    Fires after URL parsing, just before the request is handed to the transport layer. Allows modification of the outgoing URL and request `init` (method, headers, body). Set `props.earlyResponse` to bypass the transport entirely.
+
+    **Context:** `request: ScramjetFetchRequest`, `parsed: ScramjetFetchParsed`, `client: BareCompatibleClient`
+
+    **Props:** `url: URL`, `init: BareRequestInit`, `earlyResponse?: BareResponse`
+
+    ```ts
+    frame.hooks.fetch.request.use(({ props }) => {
+      props.init.headers.set('X-Proxied-By', 'scramjet');
+    });
+    ```
+  </Tab>
+  <Tab title="preresponse">
+    Fires after the transport returns a response, before any body rewriting occurs. `props.response` is the raw `BareResponse` from the upstream server. Replace `props.response` to substitute a different upstream response.
+
+    **Context:** `request: ScramjetFetchRequest`, `parsed: ScramjetFetchParsed`
+
+    **Props:** `response: BareResponse`
+
+    ```ts
+    frame.hooks.fetch.preresponse.use(({ context, props }) => {
+      console.log('Upstream status:', props.response.status);
+    });
+    ```
+  </Tab>
+  <Tab title="response">
+    Fires after the response body has been fully rewritten and headers have been processed. Replace `props.response` to substitute the final response delivered to the service worker.
+
+    **Context:** `request: ScramjetFetchRequest`, `parsed: ScramjetFetchParsed`
+
+    **Props:** `response: ScramjetFetchResponse`
+
+    ```ts
+    frame.hooks.fetch.response.use(({ props }) => {
+      props.response.headers.set('X-Frame-Id', frame.id);
+    });
+    ```
+  </Tab>
+</Tabs>
+
+### Init hooks — `frame.hooks.init`
+
+<ResponseField name="frame.hooks.init.pre" type="TapInstance">
+  Fires inside the iframe's context **before** the Scramjet client initializes. Receives `{ window, client, isTopLevel }` in context. Use this to patch globals or inject code before the page scripts run.
+</ResponseField>
+
+<ResponseField name="frame.hooks.init.post" type="TapInstance">
+  Fires inside the iframe's context **after** the Scramjet client has fully initialized. Receives `{ window, client, isTopLevel }` in context. Use this to inspect or extend a fully-hooked environment.
+</ResponseField>
+
+### Error hooks — `frame.hooks.error`
+
+<ResponseField name="frame.hooks.error.request" type="TapInstance">
+  Fires when a fetch request throws an unhandled error. Context includes the original `rawrequest` and the caught `error`. Set `props.setResponse` to a `TransferResponse` to return a custom error page instead of propagating the exception. Set `props.suppressError` to `true` to silence console output.
+
+  ```ts
+  frame.hooks.error.request.use(({ context, props }) => {
+    console.warn('Proxy error for', context.rawrequest.rawUrl, context.error);
+    props.suppressError = true;
+    props.setResponse = {
+      status: 503,
+      statusText: 'Proxy Error',
+      headers: [['content-type', 'text/html']],
+      body: '<h1>Something went wrong</h1>',
+    };
+  });
+  ```
+</ResponseField>
+
+---
+
+## Complete Example
+
+<CodeGroup>
+```ts Basic navigation
+const iframe = document.getElementById('proxy-iframe') as HTMLIFrameElement;
+const frame = controller.createFrame(iframe);
+
+frame.go('https://example.com');
+
+// Navigate history
+setTimeout(() => frame.go('https://example.com/about'), 2000);
+setTimeout(() => frame.back(), 4000);
+setTimeout(() => frame.reload(), 6000);
+```
+
+```ts With plugins and hooks
+import { Controller, ManagedPlugin } from '@mercuryworkshop/scramjet-controller';
+
+class LoggingPlugin extends ManagedPlugin {
+  constructor() {
+    super('logger', []);
+  }
+}
+
+const frame = controller.createFrame(undefined, {
+  plugins: [new LoggingPlugin()],
+});
+
+// Log every proxied request
+frame.hooks.fetch.request.use(({ props }) => {
+  console.log('[Scramjet] Fetching:', props.url.href);
+});
+
+// Handle errors gracefully
+frame.hooks.error.request.use(({ context, props }) => {
+  props.suppressError = true;
+  props.setResponse = {
+    status: 503,
+    statusText: 'Error',
+    headers: [['content-type', 'text/plain']],
+    body: `Request failed: ${String(context.error)}`,
+  };
+});
+
+// Append the frame to the document and navigate
+document.body.appendChild(frame.element);
+frame.go('https://example.com');
+```
+</CodeGroup>

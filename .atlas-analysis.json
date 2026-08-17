@@ -1,0 +1,125 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Scramjet",
+  "projectDescription": "An interception-based web proxy library that rewrites and sandboxes arbitrary web content inside the browser to bypass censorship and CORS restrictions.",
+  "theme": "luma",
+  "primaryColor": "#fb7f09",
+  "lightColor": "#fbac6a",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "Integration Guide",
+            "pages": [
+              "guides/server-setup",
+              "guides/client-setup",
+              "guides/transports",
+              "guides/codec"
+            ]
+          },
+          {
+            "group": "Plugins & Extensions",
+            "pages": [
+              "guides/plugins",
+              "guides/builtin-plugins",
+              "guides/hooks"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "guides/configuration",
+              "guides/site-flags",
+              "guides/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core",
+            "pages": [
+              "api/controller",
+              "api/frame",
+              "api/scramjet-config",
+              "api/scramjet-fetch-handler"
+            ]
+          },
+          {
+            "group": "Plugins",
+            "pages": [
+              "api/plugin",
+              "api/managed-plugin",
+              "api/tap"
+            ]
+          },
+          {
+            "group": "Bootstrap",
+            "pages": [
+              "api/bootstrap-server",
+              "api/bootstrap-client"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/utils-plugins",
+              "api/cookie-jar",
+              "api/scramjet-headers"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "In-browser interception and rewriting of HTML, CSS, JavaScript, and WebAssembly",
+    "Transparent URL encoding/decoding with configurable codecs",
+    "Service Worker-based request proxying with zero server-side rendering",
+    "WebSocket proxying via Wisp protocol",
+    "Pluggable transport layer (Epoxy, libcurl, Bare)",
+    "Plugin system with ordered hooks (Tap) for fetch lifecycle, init, and error events",
+    "Cookie synchronization across frames and service workers",
+    "Built-in HTTP cache plugin for improved performance",
+    "Source map support for debugging proxied JavaScript",
+    "create-proxy-app CLI scaffolding tool"
+  ],
+  "publicApiSurface": [
+    "Controller (class) — orchestrates service worker, transport, and frames",
+    "Controller.createFrame(element?, options?) — creates a sandboxed iframe Frame",
+    "Controller.wait() — resolves when the controller is ready",
+    "Controller.setTransport(transport) — swap the proxy transport at runtime",
+    "Frame (class) — represents a single proxied iframe with hooks and navigation",
+    "Frame.go(url) — navigate the frame to a proxied URL",
+    "Frame.back() / Frame.forward() / Frame.reload() — history navigation",
+    "Frame.hooks.fetch / Frame.hooks.init / Frame.hooks.error — lifecycle hooks",
+    "ManagedPlugin (class) — base class for frame-aware plugins",
+    "Plugin (class) — base class for tap-aware plugins",
+    "Tap.create<T>() / Tap.tap() / Tap.dispatch() — hook system",
+    "ScramjetConfig / ScramjetFlags — configuration type interfaces",
+    "ScramjetFetchHandler — handles fetch requests through the proxy pipeline",
+    "CookieJar — manages cookies across proxied origins",
+    "ScramjetHeaders — HTTP header manipulation utility",
+    "bootstrap() (server) — downloads and serves scramjet assets, exposes routeRequest/routeUpgrade",
+    "init(cfg) (client bootstrap) — registers service worker and initializes Controller",
+    "HttpCachePlugin — RFC 9111-compliant HTTP cache for proxied responses",
+    "UrlWatcherPlugin — fires callback on frame URL changes",
+    "LinkHandlerPlugin — intercepts anchor clicks to open in new tabs via callback",
+    "CatchEscapedLinksPlugin — catches links that escape the proxy frame",
+    "EventHandlerPlugin — low-level DOM event interception for plugins",
+    "create-proxy-app CLI — scaffold a new Scramjet proxy app"
+  ]
+}

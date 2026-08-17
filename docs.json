@@ -1,72 +1,100 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Scramjet",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#fb7f09",
+    "light": "#fbac6a"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
+  "favicon": "https://media.brand.dev/0b37a360-e4c5-4b2f-9d9c-aa40a7ec3ba9.webp",
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/MercuryWorkshop/scramjet"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/MercuryWorkshop/scramjet"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "Integration Guide",
+            "pages": [
+              "guides/server-setup",
+              "guides/client-setup",
+              "guides/transports",
+              "guides/codec"
+            ]
+          },
+          {
+            "group": "Plugins & Extensions",
+            "pages": [
+              "guides/plugins",
+              "guides/builtin-plugins",
+              "guides/hooks"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "guides/configuration",
+              "guides/site-flags",
+              "guides/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core",
+            "pages": [
+              "api/controller",
+              "api/frame",
+              "api/scramjet-config",
+              "api/scramjet-fetch-handler"
+            ]
+          },
+          {
+            "group": "Plugins",
+            "pages": [
+              "api/plugin",
+              "api/managed-plugin",
+              "api/tap"
+            ]
+          },
+          {
+            "group": "Bootstrap",
+            "pages": [
+              "api/bootstrap-server",
+              "api/bootstrap-client"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/utils-plugins",
+              "api/cookie-jar",
+              "api/scramjet-headers"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

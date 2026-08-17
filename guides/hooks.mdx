@@ -1,0 +1,359 @@
+---
+title: "Tapping into Scramjet's Lifecycle Hooks"
+sidebarTitle: "Hooks"
+description: "Use Scramjet's Tap system to intercept and modify fetch requests, responses, frame initialization, and error events with ordered plugin callbacks."
+---
+
+Scramjet exposes a type-safe, plugin-ordered hook system built on the `Tap` class from `@mercuryworkshop/scramjet`. Every observable moment in the proxy lifecycle — from the first byte of an outgoing request to the last byte of a rewritten response — has a corresponding hook you can tap. Hooks live on the `Frame` object under three namespaces: `frame.hooks.fetch`, `frame.hooks.init`, and `frame.hooks.error`.
+
+## The Tap System
+
+`Tap` is a lightweight, Promise-based hook dispatcher. Hooks are created with `Tap.create<T>()`, populated with callbacks via `Tap.tap()` (or the `Plugin.tap()` convenience method), and fired with `Tap.dispatch()`.
+
+```ts
+import { Tap, Plugin } from '@mercuryworkshop/scramjet';
+
+// Each hook is a typed slot on a TapInstance
+const hooks = Tap.create<{
+  myEvent: {
+    context: { value: string };
+    props: { result?: string };
+  };
+}>();
+
+// Register a callback
+const plugin = new Plugin('my-plugin');
+Tap.tap(hooks.myEvent, (context, props) => {
+  props.result = context.value.toUpperCase();
+}, plugin);
+
+// Fire the hook — all callbacks run concurrently
+const props = { result: undefined };
+await Tap.dispatch(hooks.myEvent, { value: 'hello' }, props);
+console.log(props.result); // 'HELLO'
+```
+
+Every hook callback receives two arguments:
+
+- **`context`** — read-only data describing what triggered the hook (the request, the window, the error, etc.)
+- **`props`** — a mutable object you can write to in order to alter Scramjet's behavior (set a response, suppress an error, inject a header, etc.)
+
+<Note>
+  `Tap.dispatch()` returns `null` (not a resolved Promise) when no callbacks are registered on a hook. Always check for `null` before awaiting if you call `dispatch` outside of Scramjet internals.
+</Note>
+
+<Warning>
+  All callbacks registered on a hook run **concurrently** via `Promise.all`. If two plugins tap the same hook and both mutate `props`, the last write wins — there is no sequential merge. Use `TapOrder` (`before`/`after`) to control which plugin's callback runs last when the execution order matters.
+</Warning>
+
+---
+
+## Hook Namespaces
+
+A `Frame` exposes three hook groups:
+
+| Namespace | Description |
+|---|---|
+| `frame.hooks.fetch` | Fetch pipeline: intercept, request, preresponse, response |
+| `frame.hooks.init` | Frame window lifecycle: pre-init and post-init |
+| `frame.hooks.error` | Error recovery: request-level errors |
+
+---
+
+## Fetch Hooks (`frame.hooks.fetch`)
+
+The fetch pipeline runs for every proxied resource — documents, scripts, stylesheets, images, API calls. The four hooks fire in order:
+
+```
+intercept → request → preresponse → response
+```
+
+### `fetch.intercept`
+
+Fires **before** any network activity. Set `props.response` to short-circuit the entire fetch pipeline and return a synthetic response without hitting the network.
+
+<Tabs>
+  <Tab title="Types">
+    ```ts
+    context: {
+      request: ScramjetFetchRequest; // rawUrl, method, headers, cache, etc.
+      parsed:  ScramjetFetchParsed;  // decoded URL, destination, meta
+    }
+    props: {
+      response?: ScramjetFetchResponse; // set this to short-circuit
+    }
+    ```
+  </Tab>
+  <Tab title="Example: block a domain">
+    ```ts
+    import { Tap, Plugin } from '@mercuryworkshop/scramjet';
+    import { ScramjetHeaders } from '@mercuryworkshop/scramjet';
+
+    const plugin = new Plugin('ad-blocker');
+    Tap.tap(frame.hooks.fetch.intercept, (context, props) => {
+      if (context.request.rawUrl.hostname.includes('ads.example.com')) {
+        props.response = {
+          body: '',
+          headers: new ScramjetHeaders(),
+          status: 200,
+          statusText: 'OK',
+        };
+      }
+    }, plugin);
+    ```
+  </Tab>
+</Tabs>
+
+### `fetch.request`
+
+Fires **just before** the transport layer sends the request to the upstream server. Modify `props.url` or `props.init` to change the outgoing request. Set `props.earlyResponse` to skip the network entirely and hand a pre-built `BareResponse` to the rewriter.
+
+<Tabs>
+  <Tab title="Types">
+    ```ts
+    context: {
+      request: ScramjetFetchRequest;
+      parsed:  ScramjetFetchParsed;
+      client:  BareCompatibleClient; // the transport client
+    }
+    props: {
+      init:           BareRequestInit;  // mutable request init
+      url:            URL;              // mutable outgoing URL
+      earlyResponse?: BareResponse;     // bypass the network
+    }
+    ```
+  </Tab>
+  <Tab title="Example: add a header">
+    ```ts
+    this.tap(frame.hooks.fetch.request, (context, props) => {
+      props.init.headers = props.init.headers ?? [];
+      (props.init.headers as [string, string][]).push(
+        ['X-My-Header', 'scramjet']
+      );
+    });
+    ```
+  </Tab>
+</Tabs>
+
+### `fetch.preresponse`
+
+Fires **after** the network response arrives but **before** the response headers and body are rewritten by Scramjet's rewriter. Modify or replace `props.response` (a raw `BareResponse`) here to alter what the rewriter sees.
+
+<Tabs>
+  <Tab title="Types">
+    ```ts
+    context: {
+      request: ScramjetFetchRequest;
+      parsed:  ScramjetFetchParsed;
+    }
+    props: {
+      response: BareResponse; // the raw upstream response — mutable
+    }
+    ```
+  </Tab>
+  <Tab title="Example: log upstream status">
+    ```ts
+    this.tap(frame.hooks.fetch.preresponse, (context, props) => {
+      console.log(
+        '[preresponse]',
+        context.request.rawUrl.href,
+        props.response.status
+      );
+    });
+    ```
+  </Tab>
+</Tabs>
+
+### `fetch.response`
+
+Fires **after** the rewriter has processed the response. This is the most commonly used hook. `props.response` is the fully rewritten `ScramjetFetchResponse` that will be returned to the service worker. Replace it to substitute a different response.
+
+<Tabs>
+  <Tab title="Types">
+    ```ts
+    context: {
+      request: ScramjetFetchRequest;
+      parsed:  ScramjetFetchParsed;
+    }
+    props: {
+      response: ScramjetFetchResponse; // the rewritten response — mutable
+    }
+    ```
+  </Tab>
+  <Tab title="Example: inject a CSP header">
+    ```ts
+    this.tap(frame.hooks.fetch.response, (context, props) => {
+      if (context.parsed.destination === 'document') {
+        props.response.headers.set(
+          'Content-Security-Policy',
+          "default-src 'self'"
+        );
+      }
+    });
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Init Hooks (`frame.hooks.init`)
+
+Init hooks fire inside the proxied `<iframe>` window each time a new Scramjet client initializes — that is, on every full page navigation. Both hooks receive the same context shape.
+
+```ts
+context: {
+  window:     Window;          // the iframe's window object
+  client:     ScramjetClient;  // the active Scramjet client
+  isTopLevel: boolean;         // true only for the top-level frame
+}
+props: {} // empty — init hooks are observation-only
+```
+
+### `init.pre`
+
+Fires **before** Scramjet's client hooks are installed on the window. Use this to set up state that must exist before any of Scramjet's own overrides run.
+
+### `init.post`
+
+Fires **after** Scramjet's client is fully hooked and the page has loaded enough to access `context.client`. This is the right place to attach per-window logic — DOM observers, URL watchers, event interceptors, etc.
+
+```ts
+this.tap(frame.hooks.init.post, (context) => {
+  if (!context.isTopLevel) return; // ignore sub-frames
+
+  console.log('New page loaded:', context.client.url.href);
+
+  context.window.addEventListener('hashchange', () => {
+    console.log('Hash changed to', context.window.location.hash);
+  });
+});
+```
+
+---
+
+## Error Hooks (`frame.hooks.error`)
+
+### `error.request`
+
+Fires when a proxied fetch throws an unhandled exception (network failure, transport error, etc.). You can provide a fallback response or suppress the error log.
+
+```ts
+context: {
+  rawrequest: TransferRequest; // the raw request that failed
+  error:      unknown;         // the thrown error
+}
+props: {
+  setResponse?:   TransferResponse; // return this instead of re-throwing
+  suppressError?: boolean;          // if true, skips console.error
+}
+```
+
+```ts
+this.tap(frame.hooks.error.request, (context, props) => {
+  console.warn('Fetch failed for', context.rawrequest.rawUrl, context.error);
+
+  // Return a user-friendly error page instead of a browser error
+  props.suppressError = true;
+  props.setResponse = {
+    body: '<h1>Could not load this page</h1>',
+    headers: [['Content-Type', 'text/html']],
+    status: 502,
+    statusText: 'Bad Gateway',
+  };
+});
+```
+
+---
+
+## Tapping Hooks from a Plugin
+
+The recommended way to tap hooks is through `ManagedPlugin`, which ties callbacks to your plugin's name and `TapOrder`:
+
+```ts
+import { ManagedPlugin } from '@mercuryworkshop/scramjet-controller';
+import type { Frame } from '@mercuryworkshop/scramjet-controller';
+
+export class RequestLoggerPlugin extends ManagedPlugin {
+  constructor() {
+    super('request-logger', []);
+  }
+
+  install(frame: Frame): void {
+    super.install(frame);
+
+    this.tap(frame.hooks.fetch.response, (context, props) => {
+      console.log(
+        '[response]',
+        context.request.rawUrl.href,
+        props.response.status
+      );
+    });
+
+    this.tap(frame.hooks.init.post, (context) => {
+      if (context.isTopLevel) {
+        console.log('[init] page ready:', context.client.url.href);
+      }
+    });
+
+    this.tap(frame.hooks.error.request, (context, props) => {
+      console.error('[error]', context.rawrequest.rawUrl, context.error);
+      props.suppressError = true;
+    });
+  }
+}
+```
+
+## Tapping Hooks Directly (Without a Plugin)
+
+You can also tap hooks without a plugin class by using `Tap.tap()` from `@mercuryworkshop/scramjet` directly. Pass a `Plugin` instance as the third argument so the tap system has a name for ordering purposes.
+
+```ts
+import { Tap, Plugin } from '@mercuryworkshop/scramjet';
+
+const myPlugin = new Plugin('my-inline-tap');
+
+Tap.tap(
+  frame.hooks.fetch.intercept,
+  (context, props) => {
+    if (context.request.rawUrl.href.includes('tracker.example.com')) {
+      props.response = {
+        body: '',
+        headers: new ScramjetHeaders(),
+        status: 200,
+        statusText: 'OK',
+      };
+    }
+  },
+  myPlugin
+);
+```
+
+## Controlling Tap Execution Order
+
+Use `TapOrder` to express ordering constraints between plugins on the same hook. Constraints are resolved via topological sort before each `Tap.dispatch()` call.
+
+```ts
+// In a ManagedPlugin — per-tap order override
+this.tap(
+  frame.hooks.fetch.response,
+  (context, props) => { /* runs before 'cache-plugin' */ },
+  { before: ['cache-plugin'] }
+);
+
+// In a ManagedPlugin — per-tap order override
+this.tap(
+  frame.hooks.fetch.response,
+  (context, props) => { /* runs after 'auth-plugin' */ },
+  { after: ['auth-plugin'] }
+);
+```
+
+The `before` and `after` arrays can each list multiple plugin names, and both can be combined on the same tap:
+
+```ts
+this.tap(
+  frame.hooks.fetch.request,
+  handler,
+  { before: ['logger'], after: ['auth-plugin', 'scramjet-http-cache'] }
+);
+```

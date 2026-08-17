@@ -1,0 +1,140 @@
+---
+title: "Plugin — Scramjet Base Plugin Class API"
+sidebarTitle: "Plugin"
+description: "API reference for the Plugin base class: constructor, tap() method, and TapOrder for controlling execution order relative to other plugins."
+---
+
+The `Plugin` class is the foundation of Scramjet's extensibility model. Every piece of custom interception logic in Scramjet is packaged as a plugin: a named object that registers callbacks against hooks exposed by the proxy runtime. Plugins use the `TapOrder` system to declare execution constraints relative to other named plugins, so complex multi-plugin setups remain deterministic regardless of registration order. For plugins that need access to a live `Frame` instance and a structured `install()` lifecycle, see [`ManagedPlugin`](/api/managed-plugin).
+
+## Import
+
+```ts
+import { Plugin } from '@mercuryworkshop/scramjet';
+```
+
+`Plugin` is exported from the core `@mercuryworkshop/scramjet` package and is available in both browser and service-worker contexts.
+
+---
+
+## Constructor
+
+```ts
+new Plugin(name: string, tapOrder?: TapOrder)
+```
+
+Creates a new plugin instance.
+
+<ParamField path="name" type="string" required>
+  A unique string identifier for this plugin. The name is used by the `TapOrder`
+  system — other plugins reference it in their `before` / `after` arrays to
+  express ordering constraints.
+</ParamField>
+
+<ParamField path="tapOrder" type="TapOrder">
+  Default execution order applied to every tap registered by this plugin. Can
+  be overridden per-tap by passing a second `order` argument to `tap()`.
+  Defaults to `{}` (no ordering constraints).
+</ParamField>
+
+---
+
+## Properties
+
+<ResponseField name="name" type="string">
+  The unique name of the plugin, as passed to the constructor.
+</ResponseField>
+
+<ResponseField name="tapOrder" type="TapOrder" readonly>
+  The default `TapOrder` for all taps registered by this plugin. Set at
+  construction time and not mutable afterward.
+</ResponseField>
+
+---
+
+## Methods
+
+### `tap()`
+
+```ts
+plugin.tap<T>(hook: T, callback: Callback<T>, order?: TapOrder): void
+```
+
+Registers a callback on a hook. The callback will be called every time `Tap.dispatch()` is invoked for that hook, in the order resolved by the `TapOrder` graph.
+
+<ParamField path="hook" type="T" required>
+  A hook reference obtained from a `TapInstance`, such as
+  `frame.hooks.fetch.response` or `frame.hooks.init.load`. The generic type
+  parameter `T` is inferred from the hook and determines the shape of
+  `context` and `props` passed to the callback.
+</ParamField>
+
+<ParamField path="callback" type="(context: T['context'], props: T['props']) => void | Promise<void>" required>
+  The function to call when the hook fires. Receives two arguments:
+
+  - **`context`** — read-only contextual data about the event (e.g. the raw request URL).
+  - **`props`** — a mutable object through which the callback can influence the outcome (e.g. replacing a response, cancelling a request).
+
+  The callback may be async; all registered callbacks for a hook run concurrently via `Promise.all`.
+</ParamField>
+
+<ParamField path="order" type="TapOrder">
+  An optional per-tap ordering override. Takes precedence over the plugin-level
+  `tapOrder` when provided.
+</ParamField>
+
+---
+
+## `TapOrder` Type
+
+`TapOrder` controls when this plugin's callback runs relative to callbacks from other named plugins on the same hook.
+
+<ResponseField name="before" type="readonly string[]">
+  Plugin names that this callback must run **before**. If the named plugin
+  has also tapped the same hook, this callback is guaranteed to execute first.
+</ResponseField>
+
+<ResponseField name="after" type="readonly string[]">
+  Plugin names that this callback must run **after**. If the named plugin has
+  also tapped the same hook, this callback is guaranteed to execute last.
+</ResponseField>
+
+<Note>
+  Circular ordering constraints (e.g. plugin A `before` plugin B, and plugin B
+  `before` plugin A) are detected at dispatch time. Scramjet logs the cycle and
+  falls back to append order rather than throwing, so the proxy stays alive.
+</Note>
+
+---
+
+## Example
+
+```ts
+import { Plugin } from '@mercuryworkshop/scramjet';
+
+const logger = new Plugin('logger');
+
+logger.tap(frame.hooks.fetch.response, (context, props) => {
+  console.log(props.response.status, context.request.rawUrl.href);
+});
+```
+
+### Using `TapOrder` to chain plugins
+
+```ts
+import { Plugin } from '@mercuryworkshop/scramjet';
+
+// "auth" runs before "cache" so authentication headers are added first
+const auth = new Plugin('auth', { before: ['cache'] });
+
+auth.tap(frame.hooks.fetch.intercept, (context, props) => {
+  props.headers.set('Authorization', 'Bearer ' + getToken());
+});
+
+const cache = new Plugin('cache');
+
+cache.tap(frame.hooks.fetch.intercept, (context, props) => {
+  // By the time this runs, auth has already set the Authorization header
+  const cached = cacheStore.get(context.request.rawUrl.href);
+  if (cached) props.response = cached;
+});
+```

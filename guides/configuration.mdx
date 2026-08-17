@@ -1,0 +1,176 @@
+---
+title: 'Configuring Scramjet: Controller and Rewriter Options'
+sidebarTitle: 'Configuration'
+description: 'Reference for ScramjetConfig, ScramjetFlags, and Controller Config options that control the proxy prefix, codec, rewriter behavior, and runtime features.'
+---
+
+Scramjet exposes two distinct configuration layers that work together to control every aspect of the proxy pipeline. The **Controller Config** (`Config` type) governs how the client-side controller locates bundles, routes requests, and encodes URLs — think of it as the plumbing that connects your page to the service worker. The **ScramjetConfig** operates one layer deeper, configuring the JavaScript rewriter itself: which features are active, which global identifiers it injects, which files to mask, and how per-site flag overrides are applied. Understanding both layers lets you tune Scramjet precisely for your deployment environment.
+
+---
+
+## Controller Config
+
+The `Config` type (exported from `@mercuryworkshop/scramjet-controller`) controls path routing and the URL codec. You pass a `Partial<Config>` as the `config` field when constructing a `Controller` instance; any fields you omit fall back to the defaults shown below.
+
+<ParamField path="prefix" type="string" default="/~/sj/">
+  The URL prefix under which all proxied resources are served. Every proxied
+  request URL begins with this path. Must end with a trailing slash and must
+  be covered by the service worker's registration scope.
+</ParamField>
+
+<ParamField path="scramjetPath" type="string" default="/scramjet/scramjet.js">
+  Absolute path from which the browser loads the main Scramjet runtime bundle
+  (`scramjet.js`). This script is injected into every proxied HTML page before
+  any other page scripts run.
+</ParamField>
+
+<ParamField path="injectPath" type="string" default="/controller/controller.inject.js">
+  Path to the controller inject script that bootstraps the in-page Scramjet
+  client. This file is served from your static file server and must be
+  accessible at exactly this path.
+</ParamField>
+
+<ParamField path="wasmPath" type="string" default="/scramjet/scramjet.wasm">
+  Path to the compiled WebAssembly rewriter binary. The controller fetches this
+  file on initialization and passes its bytes to the WASM runtime. Must be
+  served with `Content-Type: application/wasm`.
+</ParamField>
+
+<ParamField path="virtualWasmPath" type="string" default="scramjet.wasm.js">
+  Internal path used by the service worker to serve the WASM payload as a
+  JavaScript module. This is a *relative* path appended to the per-frame prefix
+  at runtime — you generally do not need to change this value.
+</ParamField>
+
+<ParamField path="codec" type="{ encode: (url: string) => string, decode: (url: string) => string }">
+  A pair of functions that encode and decode proxied URLs in the browser. The
+  default codec uses `encodeURIComponent` / `decodeURIComponent`. You can
+  substitute any reversible bijection — for example Base64 — to obscure URLs
+  from casual inspection.
+</ParamField>
+
+### Example: Custom prefix and codec
+
+```ts
+const controller = new Controller({
+  serviceworker: sw,
+  transport,
+  config: {
+    prefix: '/proxy/',
+    codec: {
+      encode: (url) => btoa(url),
+      decode: (url) => atob(url),
+    },
+  },
+});
+```
+
+---
+
+## ScramjetConfig
+
+`ScramjetConfig` (exported from `@mercuryworkshop/scramjet`) configures the JavaScript rewriter that runs inside the service worker. Pass a `Partial<ScramjetConfig>` as the `scramjetConfig` field of the `Controller` constructor. The controller deep-merges your overrides on top of the built-in defaults.
+
+### `globals`
+
+The `globals` object holds the internal identifier names that the rewriter injects into every rewritten script. These names are unlikely to conflict with real-world code, but if a site happens to define one of them you can rename it here.
+
+| Field | Default value |
+|---|---|
+| `wrapfn` | `$scramjet$wrap` |
+| `wrappropertybase` | `$scramjet__` |
+| `wrappropertyfn` | `$scramjet$prop` |
+| `cleanrestfn` | `$scramjet$clean` |
+| `importfn` | `$scramjet$import` |
+| `rewritefn` | `$scramjet$rewrite` |
+| `metafn` | `$scramjet$meta` |
+| `wrappostmessagefn` | `$scramjet$wrappostmessage` |
+| `pushsourcemapfn` | `$scramjet$pushsourcemap` |
+| `trysetfn` | `$scramjet$tryset` |
+| `templocid` | `$scramjet$temploc` |
+| `tempunusedid` | `$scramjet$tempunused` |
+
+<Note>
+  You rarely need to change `globals`. The only reason to do so is if a proxied
+  site explicitly checks for or deletes identifiers that match the default
+  `$scramjet$*` pattern. Changing these names requires rebuilding the WASM
+  rewriter to match.
+</Note>
+
+### `flags`
+
+The `flags` object enables or disables individual rewriter features. See the [Site Flags](/guides/site-flags) page for the full reference of every available flag and its default value.
+
+### `siteFlags`
+
+`siteFlags` is a `Record<string, Partial<ScramjetFlags>>` that lets you override specific flags for URLs matching a JavaScript regex pattern. This is the recommended way to fix broken sites without changing global defaults. See the [Site Flags](/guides/site-flags) page for full documentation.
+
+### `maskedfiles`
+
+<ParamField path="maskedfiles" type="string[]" default="[]">
+  An array of file path strings that the service worker should **not** proxy.
+  Requests whose URL pathname ends with one of these strings are passed through
+  to the origin without rewriting. The default controller configuration masks
+  `inject.js` and `scramjet.wasm.js` so that scramjet's own support scripts
+  are never recursively rewritten.
+</ParamField>
+
+### Example: ScramjetConfig overrides
+
+```ts
+const controller = new Controller({
+  serviceworker: sw,
+  transport,
+  scramjetConfig: {
+    flags: {
+      sourcemaps: true,
+      captureErrors: true,
+    },
+    maskedfiles: ['inject.js', 'scramjet.wasm.js'],
+  },
+});
+```
+
+---
+
+## Default configs
+
+`@mercuryworkshop/scramjet` exports two ready-made `ScramjetConfig` objects that serve as convenient starting points:
+
+<Note>
+  Both `defaultConfig` and `defaultConfigDev` are exported directly from
+  `@mercuryworkshop/scramjet`. They are plain objects — you can spread them into
+  your own config or pass them directly as `scramjetConfig`. The controller
+  always deep-merges your value on top of the built-in defaults, so you only
+  need to specify the fields you want to change.
+</Note>
+
+<Tip>
+  Use `defaultConfigDev` during local development. It sets `captureErrors: true`,
+  `debugTrampolines: true`, and `debugSourceURL: true`, giving you detailed
+  rewriter diagnostics and source-mapped stack traces. Switch to `defaultConfig`
+  (or omit `scramjetConfig` entirely) before deploying to production to minimize
+  overhead and avoid leaking internal source information.
+</Tip>
+
+<CodeGroup>
+```ts defaultConfig (production)
+import { defaultConfig } from '@mercuryworkshop/scramjet';
+
+const controller = new Controller({
+  serviceworker: sw,
+  transport,
+  scramjetConfig: defaultConfig,
+});
+```
+
+```ts defaultConfigDev (development)
+import { defaultConfigDev } from '@mercuryworkshop/scramjet';
+
+const controller = new Controller({
+  serviceworker: sw,
+  transport,
+  scramjetConfig: defaultConfigDev,
+});
+```
+</CodeGroup>

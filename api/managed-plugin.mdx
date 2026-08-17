@@ -1,0 +1,189 @@
+---
+title: "ManagedPlugin — Frame-Aware Scramjet Plugin API"
+sidebarTitle: "ManagedPlugin"
+description: "API reference for ManagedPlugin, which extends Plugin with a Frame reference, install() lifecycle method, and plugin dependency declarations."
+---
+
+`ManagedPlugin` is the recommended base class for any plugin that needs access to a specific proxy `Frame`. Unlike the bare `Plugin` class — which is context-free and can tap any hook at any time — a `ManagedPlugin` is tied to one `Frame` instance and receives that instance through the `install()` lifecycle method. This lets you safely reference `frame.hooks` in one structured place and declare which other plugins must be present on the same frame for yours to function correctly.
+
+## Import
+
+```ts
+import { ManagedPlugin } from '@mercuryworkshop/scramjet-controller';
+import type { Frame } from '@mercuryworkshop/scramjet-controller';
+```
+
+`ManagedPlugin` is exported from the controller package (`@mercuryworkshop/scramjet-controller`) and runs in the browser's main-thread context, not inside the service worker.
+
+---
+
+## Constructor
+
+```ts
+new ManagedPlugin(name: string, dependencies: string[])
+```
+
+<ParamField path="name" type="string" required>
+  A unique string identifier for this plugin. Used by `TapOrder` constraints
+  and by `Frame.getPlugin()` to look up the plugin by name.
+</ParamField>
+
+<ParamField path="dependencies" type="string[]" required>
+  An array of plugin names that must be installed on the same frame as this
+  plugin. Scramjet validates this list when the frame is created and throws
+  immediately if any declared dependency is missing.
+</ParamField>
+
+---
+
+## Properties
+
+<ResponseField name="frame" type="Frame">
+  The `Frame` instance this plugin is installed on. Set automatically by
+  `install()` before any hook callbacks fire. Do **not** read this property
+  in the constructor — it is `null` until `install()` is called.
+</ResponseField>
+
+<ResponseField name="dependencies" type="string[]">
+  The dependency list passed to the constructor.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Inherited from `Plugin`. The unique plugin name.
+</ResponseField>
+
+<ResponseField name="tapOrder" type="TapOrder">
+  Inherited from `Plugin`. The default `TapOrder` for all taps registered by
+  this plugin. Defaults to `{}`.
+</ResponseField>
+
+---
+
+## Methods
+
+### `install()`
+
+```ts
+install(frame: Frame): void
+```
+
+Called automatically by the `Frame` constructor for each plugin in the `plugins` option. **Override this method** in your subclass to register hook callbacks.
+
+<ParamField path="frame" type="Frame" required>
+  The `Frame` instance being initialized. The base class implementation stores
+  this reference as `this.frame`, so you should call `super.install(frame)` if
+  you override `install()`.
+</ParamField>
+
+<Note>
+  The `frame` property is only set after `install()` is called. Accessing
+  `this.frame` in your constructor will return `null`. All hook registrations
+  that reference `frame.hooks` must live inside `install()`.
+</Note>
+
+### `tap()` (inherited)
+
+```ts
+plugin.tap<T>(hook: T, callback: Callback<T>, order?: TapOrder): void
+```
+
+Inherited from [`Plugin`](/api/plugin). Use this inside `install()` to register callbacks on `frame.hooks.*`. See the `Plugin` reference for the full parameter description.
+
+---
+
+## Registering a Plugin with a Frame
+
+Pass an array of `ManagedPlugin` instances via the `plugins` option of `controller.createFrame()`:
+
+```ts
+const frame = controller.createFrame(iframe, {
+  plugins: [new MyPlugin(), new AnotherPlugin()],
+});
+```
+
+The `Frame` constructor iterates this array, validates dependencies, and calls `install(frame)` on each plugin in order.
+
+<Warning>
+  All plugin names listed in a plugin's `dependencies` array must appear in the
+  same `plugins` array passed to `createFrame()`. If a declared dependency is
+  missing, `createFrame()` throws a `Error` with the name of the missing plugin
+  before the frame is usable. Declare every dependency — omitting one produces
+  a silent runtime failure rather than a clear error.
+</Warning>
+
+---
+
+## Full Example
+
+```ts
+import { ManagedPlugin } from '@mercuryworkshop/scramjet-controller';
+import type { Frame } from '@mercuryworkshop/scramjet-controller';
+
+export class RequestTimerPlugin extends ManagedPlugin {
+  private timers = new Map<string, number>();
+
+  constructor() {
+    // No dependencies required
+    super('request-timer', []);
+  }
+
+  install(frame: Frame): void {
+    // Always call super so this.frame is set
+    super.install(frame);
+
+    // Record the start time when a fetch is intercepted
+    this.tap(frame.hooks.fetch.intercept, (context) => {
+      this.timers.set(context.request.rawUrl.href, performance.now());
+    });
+
+    // Log the elapsed time when the response arrives
+    this.tap(frame.hooks.fetch.response, (context) => {
+      const start = this.timers.get(context.request.rawUrl.href);
+      if (start) {
+        const elapsed = performance.now() - start;
+        console.log(`${context.request.rawUrl.href}: ${elapsed.toFixed(1)}ms`);
+        this.timers.delete(context.request.rawUrl.href);
+      }
+    });
+  }
+}
+```
+
+### Using the plugin
+
+```ts
+import { RequestTimerPlugin } from './RequestTimerPlugin';
+
+await controller.wait();
+
+const frame = controller.createFrame(
+  document.getElementById('frame') as HTMLIFrameElement,
+  { plugins: [new RequestTimerPlugin()] }
+);
+
+frame.go('https://example.com');
+```
+
+### Plugin with a dependency
+
+```ts
+import { ManagedPlugin } from '@mercuryworkshop/scramjet-controller';
+import type { Frame } from '@mercuryworkshop/scramjet-controller';
+
+// This plugin requires 'request-timer' to be installed on the same frame
+export class TimerReporterPlugin extends ManagedPlugin {
+  constructor() {
+    super('timer-reporter', ['request-timer']);
+  }
+
+  install(frame: Frame): void {
+    super.install(frame);
+
+    // Retrieve the sibling plugin by name
+    // frame.getPlugin<RequestTimerPlugin>('request-timer')
+    this.tap(frame.hooks.fetch.response, (context) => {
+      // report metrics, etc.
+    });
+  }
+}
+```

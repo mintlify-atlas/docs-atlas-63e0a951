@@ -1,0 +1,371 @@
+---
+title: "scramjet-utils Plugin API Reference"
+sidebarTitle: "Utils Plugins"
+description: "Complete API reference for all plugins and utilities exported from @mercuryworkshop/scramjet-utils including HttpCachePlugin, UrlWatcherPlugin, and more."
+---
+
+The `@mercuryworkshop/scramjet-utils` package ships a collection of ready-made `ManagedPlugin` implementations and standalone helpers that cover the most common needs when building a proxied browsing experience: HTTP response caching, URL change notifications, new-tab interception, escaped-link recovery, and a low-level event-ordering primitive. Every plugin listed here is designed to be composed — drop whichever ones you need into a single `plugins` array and they wire themselves up automatically.
+
+## Installation
+
+```bash
+npm install @mercuryworkshop/scramjet-utils
+```
+
+## Combined Usage Example
+
+<CodeGroup>
+
+```ts All Plugins Together
+import {
+  HttpCachePlugin,
+  EventHandlerPlugin,
+  UrlWatcherPlugin,
+  LinkHandlerPlugin,
+  CatchEscapedLinksPlugin,
+} from '@mercuryworkshop/scramjet-utils';
+
+const frame = controller.createFrame(iframe, {
+  plugins: [
+    new HttpCachePlugin(),
+    new EventHandlerPlugin(),
+    new UrlWatcherPlugin((url) => {
+      document.getElementById('url-bar').value = url;
+    }),
+    new LinkHandlerPlugin((url) => {
+      const newFrame = controller.createFrame();
+      document.body.appendChild(newFrame.element);
+      newFrame.go(url);
+    }),
+    new CatchEscapedLinksPlugin((url) => {
+      // redirect escaped navigations back through the proxy shell
+      return `https://my-proxy.example.com/?url=${encodeURIComponent(url.href)}`;
+    }),
+  ],
+});
+```
+
+</CodeGroup>
+
+---
+
+## `HttpCachePlugin`
+
+`HttpCachePlugin` extends `ManagedPlugin` and implements an RFC 9111-compliant HTTP cache backed by the browser's [Cache API](https://developer.mozilla.org/en-US/docs/Web/API/Cache). Because the Scramjet service worker bypasses the browser's native HTTP cache, every navigation would otherwise trigger a full upstream fetch. This plugin restores normal caching semantics by storing pre-rewrite upstream responses so that they can be shared across frames, controllers, and page reloads.
+
+<Note>
+  Responses are cached **before** Scramjet's URL-rewriting pass runs. This means a single cached entry serves any frame regardless of its rewrite prefix, and `rewriteResponseHeaders` / `rewriteBody` still execute on every cache hit — only the network round-trip is skipped.
+</Note>
+
+### Cache name constant
+
+```ts
+import { CACHE_NAME } from '@mercuryworkshop/scramjet-utils';
+// 'scramjet-http-cache-v2'
+```
+
+<ResponseField name="CACHE_NAME" type="string">
+  The default name passed to `caches.open()`. Equal to `'scramjet-http-cache-v2'`. Override it via `HttpCachePluginOptions.cacheName`.
+</ResponseField>
+
+### Constructor
+
+```ts
+new HttpCachePlugin(options?: HttpCachePluginOptions)
+```
+
+<ParamField body="options" type="HttpCachePluginOptions" optional>
+  Configuration object for the plugin.
+
+  <Expandable title="HttpCachePluginOptions">
+    <ParamField body="cacheName" type="string" optional>
+      Name passed to `caches.open()`. Defaults to `CACHE_NAME` (`'scramjet-http-cache-v2'`). Override this to isolate caches between multiple independent proxy deployments on the same origin.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Instance property
+
+<ResponseField name="cacheName" type="string">
+  The resolved cache name used by this instance. Read-only after construction.
+</ResponseField>
+
+### Methods
+
+#### `bust(): Promise<boolean>`
+
+Deletes every entry in the cache store and resets the internal `caches.open()` handle so the next request opens a fresh empty cache.
+
+```ts
+const wasDeleted = await httpCachePlugin.bust();
+```
+
+<ResponseField name="returns" type="Promise<boolean>">
+  Resolves to `true` if the underlying `Cache` existed and was deleted, `false` otherwise (including on error).
+</ResponseField>
+
+### RFC 9111 compliance details
+
+| Rule | Behavior |
+|---|---|
+| Cacheable methods | `GET` and `HEAD` only |
+| Cacheable status codes | 200, 203, 204, 300, 301, 308, 404, 405, 410, 414, 501 |
+| `Cache-Control: no-store` | Never stored, never served from cache |
+| `Vary: *` | Not stored |
+| `Cache-Control: no-cache` / `Pragma: no-cache` | Treated as stale; falls through to network |
+| `Cache-Control: immutable` | Served from cache without freshness check (RFC 8246) |
+| Freshness order | `s-maxage` → `max-age` → `Expires` → heuristic (10% of `Date − Last-Modified`) |
+
+### Dependencies
+
+None. `HttpCachePlugin` has no plugin dependencies and can be installed standalone.
+
+---
+
+## `UrlWatcherPlugin`
+
+`UrlWatcherPlugin` extends `ManagedPlugin` and fires a callback every time the top-level URL of a frame changes — including on initial load, `history.pushState` / `history.replaceState` navigation events, and `hashchange`. Use it to keep a URL bar or breadcrumb in sync without polling.
+
+### Constructor
+
+```ts
+new UrlWatcherPlugin(
+  onUrlChange: (url: string) => void,
+  options?: UrlWatcherOptions
+)
+```
+
+<ParamField body="onUrlChange" type="(url: string) => void" required>
+  Callback invoked with the new absolute URL string whenever the frame's location changes. Also called once immediately after the frame's `init.post` hook fires with the initial URL.
+</ParamField>
+
+<ParamField body="options" type="UrlWatcherOptions" optional>
+  Reserved for future configuration. Currently an empty object type; pass `{}` or omit entirely.
+</ParamField>
+
+### Trigger events
+
+| Trigger | Notes |
+|---|---|
+| `init.post` hook | Called once on load with the initial URL |
+| `lifecycle.navigate` hook | Fires on history-driven navigations (`pushState`, `replaceState`, full navigations) |
+| `hashchange` DOM event | Fires on hash-only changes; may fire twice if the hash change also triggers a `navigate` hook |
+
+<Warning>
+  `UrlWatcherPlugin` only tracks the **top-level** frame (`context.isTopLevel === true`). URL changes in sub-frames (iframes within the proxied page) do not trigger the callback.
+</Warning>
+
+### Example
+
+```ts
+new UrlWatcherPlugin((url) => {
+  history.replaceState(null, '', '/?destination=' + encodeURIComponent(url));
+});
+```
+
+### Dependencies
+
+None.
+
+---
+
+## `LinkHandlerPlugin`
+
+`LinkHandlerPlugin` extends `ManagedPlugin` and intercepts anchor `click` (left mouse button) and `auxclick` (middle mouse button) events so that links that would open a new tab are instead routed through a developer-supplied callback. This lets you open the target URL in a new proxied frame rather than a raw browser tab.
+
+### Constructor
+
+```ts
+new LinkHandlerPlugin(
+  onNewTab: (url: string) => void,
+  options?: LinkHandlerPluginOptions
+)
+```
+
+<ParamField body="onNewTab" type="(url: string) => void" required>
+  Called with the resolved `href` of any anchor element that receives a left-click or middle-click. Both `e.preventDefault()` and `e.stopImmediatePropagation()` are called before the callback so the browser never opens a native tab.
+</ParamField>
+
+<ParamField body="options" type="LinkHandlerPluginOptions" optional>
+  Reserved for future configuration. Currently an empty object type.
+</ParamField>
+
+### Intercepted events
+
+| Event | Button | Action |
+|---|---|---|
+| `click` | Left button (`button === 0`) | `preventDefault` + `stopImmediatePropagation`, then `onNewTab` |
+| `auxclick` | Middle button (`button === 1`) | `preventDefault` + `stopImmediatePropagation`, then `onNewTab` |
+
+A `MutationObserver` watches the document for newly added `<a>` elements and attaches listeners automatically, so links injected by client-side frameworks are also handled.
+
+<Warning>
+  `LinkHandlerPlugin` requires `EventHandlerPlugin` to be present in the **same frame's plugin list**. Omitting it will throw at install time. Always include `EventHandlerPlugin` before `LinkHandlerPlugin`.
+</Warning>
+
+### Example
+
+```ts
+import { EventHandlerPlugin, LinkHandlerPlugin } from '@mercuryworkshop/scramjet-utils';
+
+const frame = controller.createFrame(iframe, {
+  plugins: [
+    new EventHandlerPlugin(),
+    new LinkHandlerPlugin((url) => {
+      const newTab = controller.createFrame();
+      document.body.appendChild(newTab.element);
+      newTab.go(url);
+    }),
+  ],
+});
+```
+
+### Dependencies
+
+`'event-handler'` — `EventHandlerPlugin` must be installed on the same frame.
+
+---
+
+## `CatchEscapedLinksPlugin`
+
+`CatchEscapedLinksPlugin` extends `ManagedPlugin` and intercepts top-level document navigations (triggered by `window.open`, `target="_blank"` links, or direct URL bar changes) that would otherwise escape the proxy shell. It issues a synthetic `302 Found` redirect to a URL you control — typically back to the proxy's entry page with the destination encoded as a query parameter.
+
+### Constructor
+
+```ts
+new CatchEscapedLinksPlugin(toLocation: (url: URL) => string | URL)
+```
+
+<ParamField body="toLocation" type="(url: URL) => string | URL" required>
+  Receives the parsed upstream URL of the escaped navigation and must return the URL the browser should be redirected to instead. Return a `string` or `URL` pointing to your proxy shell.
+</ParamField>
+
+### Example
+
+```ts
+new CatchEscapedLinksPlugin((url) => {
+  return `https://my-proxy.example.com/#${encodeURIComponent(url.href)}`;
+});
+```
+
+<Tip>
+  This plugin hooks into `frame.hooks.fetch.intercept` and runs **after** `scramjet-http-cache` so that cached responses are never incorrectly redirected.
+</Tip>
+
+### Dependencies
+
+None.
+
+---
+
+## `EventHandlerPlugin`
+
+`EventHandlerPlugin` extends `ManagedPlugin` and provides a low-level primitive for attaching DOM event listeners that always fire **after** any event listeners the proxied page itself registered — even when the page calls `stopPropagation()` or `stopImmediatePropagation()`. It proxies `EventTarget.prototype.addEventListener` to track the full listener chain across the entire bubble path, then injects your callback at the correct position.
+
+This plugin is a building block — it is required by `LinkHandlerPlugin` and can also be used directly when you need guaranteed-last delivery of any DOM event.
+
+### Constructor
+
+```ts
+new EventHandlerPlugin(options?: EventHandlerPluginOptions)
+```
+
+<ParamField body="options" type="EventHandlerPluginOptions" optional>
+  <Expandable title="EventHandlerPluginOptions">
+    <ParamField body="events" type="string[]" optional>
+      Array of bubble-phase event type names to track. Defaults to `['click', 'auxclick', 'contextmenu']`. Add additional event names here if you need guaranteed-last delivery for other event types.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Methods
+
+#### `addEventListener<T extends Event>(target, eventName, listener)`
+
+Registers `listener` on `target` such that it runs after all other listeners for `eventName` on the entire bubble path — including after any `stopPropagation()` calls.
+
+```ts
+eventHandlerPlugin.addEventListener(anchorElement, 'click', (e: MouseEvent) => {
+  // guaranteed to run last
+});
+```
+
+<ParamField body="target" type="EventTarget" required>
+  The DOM node to attach the listener to. Must belong to a window that has been initialized through the frame's `init.post` hook.
+</ParamField>
+
+<ParamField body="eventName" type="string" required>
+  The event type string (e.g. `'click'`). Must be one of the event types being tracked by this plugin instance (see `options.events`).
+</ParamField>
+
+<ParamField body="listener" type="(e: T) => void" required>
+  The callback. Receives the original `Event` object with `stopPropagation` and `stopImmediatePropagation` restored to their native implementations.
+</ParamField>
+
+#### `addEventToCapture(eventName: string): void`
+
+Adds a new event type to the tracked set at runtime.
+
+<ParamField body="eventName" type="string" required>
+  Event type name to begin tracking (e.g. `'dblclick'`). No-op if the type is already tracked.
+</ParamField>
+
+### Dependencies
+
+None.
+
+---
+
+## `setupAlwaysLastBubble`
+
+`setupAlwaysLastBubble` is a **standalone function** (not a plugin) that is the underlying mechanism powering `EventHandlerPlugin`. Call it directly when you need fine-grained control over which `ScramjetClient` and event types are instrumented, typically inside a frame's `init.post` hook.
+
+### Signature
+
+```ts
+function setupAlwaysLastBubble(
+  client: ScramjetClient,
+  whatToCapture: string[]
+): AddAlwaysLastEventListener
+```
+
+<ParamField body="client" type="ScramjetClient" required>
+  The `ScramjetClient` instance for the frame being instrumented. Passed as `context.client` inside an `init.post` hook.
+</ParamField>
+
+<ParamField body="whatToCapture" type="string[]" required>
+  Array of bubble-phase event type names to intercept. Only events in this list will be tracked in the listener registry; all others pass through unmodified.
+</ParamField>
+
+<ResponseField name="returns" type="AddAlwaysLastEventListener">
+  A function with the signature `(target: EventTarget, eventName: string, listener: (e: T) => void) => void` that attaches a guaranteed-last listener to the given target.
+</ResponseField>
+
+### Example
+
+```ts
+import { setupAlwaysLastBubble } from '@mercuryworkshop/scramjet-utils';
+
+// Inside a plugin's install() method:
+this.tap(frame.hooks.init.post, (context) => {
+  const addAlwaysLast = setupAlwaysLastBubble(context.client, ['click']);
+
+  addAlwaysLast(someElement, 'click', (e: MouseEvent) => {
+    // runs after every page-registered click listener
+  });
+});
+```
+
+<Note>
+  `setupAlwaysLastBubble` proxies `EventTarget.prototype.addEventListener` on the given client, so it must be called **inside** the `init.post` hook — after the client's JavaScript environment is ready but before the page has registered its own listeners.
+</Note>
+
+### Type alias
+
+```ts
+type AddAlwaysLastEventListener = (
+  target: EventTarget,
+  eventName: string,
+  listener: (e: Event) => void
+) => void;
+```

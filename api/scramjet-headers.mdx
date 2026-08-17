@@ -1,0 +1,223 @@
+---
+title: "ScramjetHeaders — HTTP Header Manipulation API"
+sidebarTitle: "ScramjetHeaders"
+description: "API reference for ScramjetHeaders, a case-insensitive HTTP header container used throughout Scramjet's fetch pipeline for rewriting request and response headers."
+---
+
+`ScramjetHeaders` is the HTTP header container used throughout Scramjet's fetch pipeline. It stores all header names in lowercase, so every read and write operation is inherently case-insensitive — `get('Content-Type')` and `get('content-type')` return the same value. Unlike the native browser `Headers` class, `ScramjetHeaders` is backed by a plain object and does not combine or deduplicate multiple values for the same name; the last writer wins, keeping the implementation simple and deterministic for rewriting purposes.
+
+## Import
+
+```ts
+import { ScramjetHeaders } from '@mercuryworkshop/scramjet';
+```
+
+## The `RawHeaders` type
+
+```ts
+type RawHeaders = [string, string][];
+```
+
+`RawHeaders` is an ordered array of `[name, value]` pairs that allows the same header name to appear multiple times. It is the wire format used between the service worker and the bare server transport. `ScramjetHeaders` can be created from and converted to `RawHeaders`.
+
+<Note>
+  Use `ScramjetHeaders` instead of the native `Headers` class wherever you need to inspect or mutate headers inside Scramjet hooks. The native `Headers` API collapses duplicate header values with a comma, which can corrupt headers like `Set-Cookie` that must remain as separate entries in `RawHeaders`. `ScramjetHeaders` preserves the last-set value per name and round-trips cleanly through `toRawHeaders()`.
+</Note>
+
+---
+
+## Static constructors
+
+### `ScramjetHeaders.fromRawHeaders(raw)`
+
+Creates a `ScramjetHeaders` instance from a `RawHeaders` array. If the same header name appears more than once, the last occurrence wins (earlier values are overwritten).
+
+```ts
+static fromRawHeaders(raw: RawHeaders): ScramjetHeaders
+```
+
+<ParamField body="raw" type="[string, string][]" required>
+  An ordered array of `[name, value]` pairs, typically sourced from a `BareResponse.rawHeaders` or a bare transport response object.
+</ParamField>
+
+<ResponseField name="returns" type="ScramjetHeaders">
+  A new `ScramjetHeaders` instance containing all headers from `raw`, with names normalised to lowercase.
+</ResponseField>
+
+### `ScramjetHeaders.fromNativeHeaders(native)`
+
+Creates a `ScramjetHeaders` instance from the browser's native `Headers` object.
+
+```ts
+static fromNativeHeaders(native: Headers): ScramjetHeaders
+```
+
+<ParamField body="native" type="Headers" required>
+  A native browser `Headers` instance (e.g. from `fetch()` or a `Request` / `Response`).
+</ParamField>
+
+<ResponseField name="returns" type="ScramjetHeaders">
+  A new `ScramjetHeaders` instance with all entries from `native`, names normalised to lowercase.
+</ResponseField>
+
+---
+
+## Instance methods
+
+### `get(name)`
+
+Returns the value stored for the given header name, or `null` if the header is not present.
+
+```ts
+get(name: string): string | null
+```
+
+<ParamField body="name" type="string" required>
+  Header name. Case-insensitive — `'Content-Type'`, `'content-type'`, and `'CONTENT-TYPE'` all resolve to the same entry.
+</ParamField>
+
+<ResponseField name="returns" type="string | null">
+  The stored header value, or `null` if no entry exists for that name.
+</ResponseField>
+
+### `set(name, value)`
+
+Sets the header to the given value. Replaces any existing value for the same name (case-insensitively). The name is stored in lowercase.
+
+```ts
+set(name: string, value: string): void
+```
+
+<ParamField body="name" type="string" required>
+  Header name. Stored in lowercase regardless of the casing you provide.
+</ParamField>
+
+<ParamField body="value" type="string" required>
+  Header value to store.
+</ParamField>
+
+### `has(name)`
+
+Returns `true` if the header is present, `false` otherwise.
+
+```ts
+has(name: string): boolean
+```
+
+<ParamField body="name" type="string" required>
+  Header name. Case-insensitive.
+</ParamField>
+
+<ResponseField name="returns" type="boolean">
+  `true` when an entry with the given name (lowercased) exists in the store.
+</ResponseField>
+
+### `delete(name)`
+
+Removes the header from the store. No-op if the header is not present.
+
+```ts
+delete(name: string): void
+```
+
+<ParamField body="name" type="string" required>
+  Header name. Case-insensitive.
+</ParamField>
+
+### `toRawHeaders()`
+
+Converts the header store back to an ordered `RawHeaders` array. Each entry in the store produces exactly one `[name, value]` pair, with the name in lowercase.
+
+```ts
+toRawHeaders(): RawHeaders
+```
+
+<ResponseField name="returns" type="[string, string][]">
+  An array of `[lowercase-name, value]` pairs. Ordering corresponds to insertion order of the underlying plain object, which in modern JS engines is insertion order for string keys.
+</ResponseField>
+
+### `toNativeHeaders()`
+
+Converts the header store to a native browser `Headers` object.
+
+```ts
+toNativeHeaders(): Headers
+```
+
+<ResponseField name="returns" type="Headers">
+  A new native `Headers` object populated with `set()` calls for each entry. Because native `Headers.set()` overwrites previous values, the result is equivalent to `toRawHeaders()` but in the native type.
+</ResponseField>
+
+### `clone()`
+
+Returns a shallow copy of this `ScramjetHeaders` instance. Mutating the clone does not affect the original, and vice versa.
+
+```ts
+clone(): ScramjetHeaders
+```
+
+<ResponseField name="returns" type="ScramjetHeaders">
+  A new `ScramjetHeaders` instance with the same header entries.
+</ResponseField>
+
+---
+
+## Usage examples
+
+<CodeGroup>
+
+```ts Constructing from raw headers
+import { ScramjetHeaders } from '@mercuryworkshop/scramjet';
+
+// From raw headers (e.g. from a BareResponse)
+const headers = ScramjetHeaders.fromRawHeaders([
+  ['content-type', 'text/html; charset=utf-8'],
+  ['cache-control', 'max-age=3600'],
+  ['x-custom', 'hello'],
+]);
+
+console.log(headers.get('Content-Type')); // 'text/html; charset=utf-8'
+console.log(headers.has('cache-control')); // true
+console.log(headers.get('X-Missing'));     // null
+```
+
+```ts Mutating headers in a fetch hook
+// Inside a plugin's install() method:
+this.tap(frame.hooks.fetch.response, (context, props) => {
+  // Remove a header the proxied page should not see
+  props.response.headers.delete('x-frame-options');
+
+  // Tag every proxied response
+  props.response.headers.set('X-Scramjet-Proxied', '1');
+});
+```
+
+```ts Converting to and from RawHeaders
+const headers = ScramjetHeaders.fromRawHeaders([
+  ['content-type', 'application/json'],
+  ['cache-control', 'no-store'],
+]);
+
+headers.set('X-Proxied', 'scramjet');
+
+const raw = headers.toRawHeaders();
+// [
+//   ['content-type', 'application/json'],
+//   ['cache-control', 'no-store'],
+//   ['x-proxied', 'scramjet'],
+// ]
+```
+
+```ts Cloning before mutation
+const original = ScramjetHeaders.fromRawHeaders([
+  ['accept', 'text/html'],
+]);
+
+const modified = original.clone();
+modified.set('accept', 'application/json');
+
+console.log(original.get('accept')); // 'text/html'  (unchanged)
+console.log(modified.get('accept')); // 'application/json'
+```
+
+</CodeGroup>

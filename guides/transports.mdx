@@ -1,0 +1,167 @@
+---
+title: "Choosing and Configuring Scramjet Proxy Transports"
+sidebarTitle: "Transports"
+description: "Compare Scramjet's transport options — Epoxy and libcurl — and learn how each one tunnels HTTP and WebSocket requests through the Wisp protocol."
+---
+
+A transport is the component responsible for making real network requests on behalf of the Scramjet proxy. Because the service worker operates inside the browser — where direct TCP/UDP sockets are unavailable — every outbound HTTP request and WebSocket connection must be tunnelled through a server-side relay. Scramjet transports implement a unified interface that abstracts this tunnelling: they receive a request from the proxy engine and return a response, routing all traffic through the Wisp WebSocket protocol to the server you control. Choosing the right transport affects performance, HTTP version support, and WASM payload size.
+
+## Available Transports
+
+Scramjet ships with two production-ready transports, selected via the `transport` field in `BootstrapOptions`:
+
+<CardGroup cols={2}>
+  <Card title="libcurl (default)" icon="bolt">
+    **Package:** `@mercuryworkshop/libcurl-transport`
+
+    Built from libcurl compiled to WebAssembly. Supports HTTP/1.1 and HTTP/2, has excellent spec compliance, and is the recommended choice for most deployments. The WASM binary is larger than epoxy's but the transport is highly reliable in practice.
+
+    ```js
+    await bootstrap({ transport: 'libcurl' });
+    ```
+  </Card>
+  <Card title="epoxy" icon="circle-nodes">
+    **Package:** `@mercuryworkshop/epoxy-transport`
+
+    A Rust-based transport also compiled to WASM. Supports HTTP/2 via Wisp. Slightly smaller WASM payload than libcurl. A solid alternative if you hit edge cases with libcurl or prefer a Rust-backed implementation.
+
+    ```js
+    await bootstrap({ transport: 'epoxy' });
+    ```
+  </Card>
+</CardGroup>
+
+Both transports:
+- Connect to the Wisp WebSocket server at `wispPath` (default `/wisp/`)
+- Automatically resolve the Wisp URL from `location.protocol` and `location.host` at runtime (`ws://` for HTTP pages, `wss://` for HTTPS pages)
+- Support HTTP/2 multiplexing through the Wisp connection
+- Handle both standard HTTP requests and WebSocket upgrades
+
+<Note>
+  The Wisp server is bundled directly into `@mercuryworkshop/proxy-bootstrap` via the `@mercuryworkshop/wisp-js` package. You do not need to set up a separate Wisp server — calling `bootstrap()` and attaching `routeUpgrade` is sufficient.
+</Note>
+
+## The ProxyTransport Interface
+
+All transports implement the `ProxyTransport` interface from `@mercuryworkshop/proxy-transports`. The controller calls these two methods to make every proxied request:
+
+### `transport.request()`
+
+Makes an HTTP request through the transport tunnel.
+
+```ts
+transport.request(
+  url: URL,           // The real destination URL
+  method: string,     // HTTP method: "GET", "POST", etc.
+  body: BodyInit | null,
+  headers: [string, string][],
+  signal: AbortSignal | undefined
+): Promise<BareResponse>
+```
+
+Returns a `BareResponse` — a representation of the HTTP response including status, headers, and a streaming body — that the scramjet rewriter processes before handing back to the page.
+
+### `transport.connect()`
+
+Opens a WebSocket connection through the transport tunnel.
+
+```ts
+transport.connect(
+  url: URL,                                          // Real WebSocket URL
+  protocols: string[],                               // Subprotocols
+  requestHeaders: [string, string][],                // Initial HTTP upgrade headers
+  onOpen: (protocol: string, extensions: string) => void,
+  onMessage: (data: ArrayBuffer | string) => void,
+  onClose: (code: number, reason: string) => void,
+  onError: (error: string) => void
+): [send: (data: ArrayBuffer | string) => void, close: (code: number, reason: string) => void]
+```
+
+Returns a tuple of `[send, close]` functions for writing to and closing the connection.
+
+## Configuring the Transport
+
+### Server-Side Selection
+
+Pass `transport` to `bootstrap()` to control which transport client the server downloads and serves:
+
+```js
+import { bootstrap } from '@mercuryworkshop/proxy-bootstrap';
+
+// Use epoxy instead of the default libcurl
+const { routeRequest, routeUpgrade } = await bootstrap({
+  transport: 'epoxy',
+});
+```
+
+### Custom Wisp Server URL
+
+By default, transports derive the Wisp URL from `wispPath` and the current page's `location`. To point at a different server — for example a remote Wisp relay — instantiate the transport directly and pass it to `controller.setTransport()`:
+
+<Tabs>
+  <Tab title="Epoxy">
+    ```ts
+    import EpoxyClient from '@mercuryworkshop/epoxy-transport';
+
+    const transport = new EpoxyClient({
+      wisp: 'wss://relay.example.com/wisp/',
+    });
+
+    controller.setTransport(transport);
+    ```
+  </Tab>
+  <Tab title="libcurl">
+    ```ts
+    import LibcurlClient from '@mercuryworkshop/libcurl-transport';
+
+    const transport = new LibcurlClient({
+      wisp: 'wss://relay.example.com/wisp/',
+    });
+
+    controller.setTransport(transport);
+    ```
+  </Tab>
+</Tabs>
+
+### Switching Transports at Runtime
+
+`controller.setTransport()` propagates the new transport to every active `Frame` and its `ScramjetFetchHandler` immediately. No page reload or frame recreation is needed:
+
+```ts
+// Start with libcurl
+const { routeRequest, routeUpgrade } = await bootstrap({ transport: 'libcurl' });
+const controller = await initBootstrap();
+await controller.wait();
+
+// ... later, swap to epoxy
+import EpoxyClient from '@mercuryworkshop/epoxy-transport';
+controller.setTransport(new EpoxyClient({
+  wisp: `wss://${location.host}/wisp/`,
+}));
+```
+
+## Pinning Transport Versions
+
+To lock transport versions server-side and prevent unexpected updates, pass version pin options to `bootstrap()`:
+
+```js
+const { routeRequest, routeUpgrade } = await bootstrap({
+  transport: 'libcurl',
+  libcurlTransportVersionPin: '2',   // Pins to latest 2.x.x
+});
+```
+
+The pinned value is the **major version** prefix. `bootstrap()` still resolves the latest patch within that major — pass a full semver string like `'2.1.0'` only if you need an exact pin.
+
+## Transport Pinned Major Versions
+
+The following major versions are the current defaults hardcoded in `proxy-bootstrap`:
+
+| Transport | Package | Pinned Major |
+|---|---|---|
+| libcurl | `@mercuryworkshop/libcurl-transport` | `2` |
+| epoxy | `@mercuryworkshop/epoxy-transport` | `3` |
+
+<Tip>
+  **libcurl is the recommended default for most deployments.** It has wider HTTP spec coverage and handles edge cases in real-world sites more reliably. Switch to epoxy if you have specific reasons — smaller WASM size requirements, or compatibility testing.
+</Tip>

@@ -1,0 +1,301 @@
+---
+title: "proxy-bootstrap Server API: bootstrap() and routeRequest"
+sidebarTitle: "Bootstrap Server"
+description: "API reference for the proxy-bootstrap server module: bootstrap(), routeRequest(), routeUpgrade(), BootstrapOptions, and automatic package downloading."
+---
+
+The `@mercuryworkshop/proxy-bootstrap` server module is the fastest way to get a Scramjet-powered proxy running in a Node.js application. Calling `bootstrap()` takes care of fetching the latest compatible versions of every required Scramjet package from the npm registry, extracting them locally, and starting a Wisp WebSocket server for transport. It then returns two routing helpers — `routeRequest` and `routeUpgrade` — that you drop into your existing HTTP server to intercept only the requests Scramjet needs to handle, leaving everything else untouched.
+
+<Tip>
+  The bootstrap module is **Node.js only**. Do not import it in browser or
+  service-worker code — use the [client module](/api/bootstrap-client) instead.
+</Tip>
+
+## Import
+
+```ts
+import { bootstrap, routeRequest, routeUpgrade, unpack } from '@mercuryworkshop/proxy-bootstrap';
+```
+
+---
+
+## `bootstrap()`
+
+```ts
+async function bootstrap(
+  cfg?: Partial<BootstrapOptions>
+): Promise<{ routeRequest, routeUpgrade }>
+```
+
+Downloads required packages (if not already present and up-to-date), configures the server, and returns the two routing functions.
+
+<ParamField path="cfg" type="Partial<BootstrapOptions>">
+  Optional configuration overrides. Any field left unset falls back to the
+  default value shown in the `BootstrapOptions` reference below.
+</ParamField>
+
+### Return value
+
+An object containing:
+
+- **`routeRequest(req, res)`** — call from your HTTP request handler.
+- **`routeUpgrade(req, socket, head)`** — call from your server's `'upgrade'` event.
+
+### What `bootstrap()` does
+
+1. Resolves the latest version of the Scramjet controller, scramjet core, scramjet-utils, and the chosen transport package against their pinned major versions.
+2. Compares the resolved version against whatever is already cached in the local `.downloads/` directory.
+3. Downloads and extracts any packages that are missing or out-of-date.
+4. Starts a Wisp WebSocket server internally.
+5. Returns the routing helpers bound to the resolved configuration.
+
+---
+
+## `routeRequest()`
+
+```ts
+function routeRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse
+): boolean
+```
+
+Handles an incoming HTTP request if it belongs to Scramjet. Call this at the very top of your request handler, before any application logic.
+
+<ParamField path="req" type="http.IncomingMessage" required>
+  The Node.js incoming request object.
+</ParamField>
+
+<ParamField path="res" type="http.ServerResponse" required>
+  The Node.js server response object. If the function returns `true`, `res.end()`
+  has already been called and you must not write to `res` further.
+</ParamField>
+
+### Return value
+
+`true` if the request was handled (and `res.end()` was called), `false` if your application should handle the request normally.
+
+### Requests handled
+
+| Path | Description |
+|---|---|
+| `swPath` | Serves the Service Worker script |
+| `bootstrapInitPath` | Serves the auto-generated `initBootstrap()` script |
+| `scramjetBundlePath` | Serves the core Scramjet JS bundle |
+| `scramjetWasmPath` | Serves the Scramjet WASM file |
+| `scramjetUtilsBundlePath` | Serves the scramjet-utils bundle |
+| `scramjetControllerApiPath` | Serves the controller API script |
+| `scramjetControllerInjectPath` | Serves the controller inject script |
+| `scramjetControllerSwPath` | Serves the controller service-worker script |
+| `libcurlClientPath` | Serves the libcurl transport client |
+
+---
+
+## `routeUpgrade()`
+
+```ts
+function routeUpgrade(
+  req: http.IncomingMessage,
+  socket: any,
+  head: Buffer
+): boolean
+```
+
+Handles a WebSocket upgrade request for the Wisp transport server.
+
+<ParamField path="req" type="http.IncomingMessage" required>
+  The upgrade request.
+</ParamField>
+
+<ParamField path="socket" type="any" required>
+  The underlying network socket.
+</ParamField>
+
+<ParamField path="head" type="Buffer" required>
+  The first packet of the upgraded stream.
+</ParamField>
+
+### Return value
+
+`true` if the upgrade was handled by Wisp, `false` if the URL does not start with `wispPath` and should be handled by your application.
+
+<Warning>
+  You **must** wire `routeUpgrade` to the `'upgrade'` event on your HTTP server.
+  Without it, WebSocket connections from the transport layer will fail and the
+  proxy will be unable to relay requests.
+</Warning>
+
+---
+
+## `BootstrapOptions`
+
+All path options are served as static files by `routeRequest`. Change them only if you need the files at non-default URLs (e.g. to avoid collisions with existing application routes).
+
+<ParamField path="transport" type='"epoxy" | "libcurl"' default='"libcurl"'>
+  Which transport backend to download and serve. `"libcurl"` is the default and
+  the most broadly compatible option.
+</ParamField>
+
+<ParamField path="swPath" type="string" default='"/sw.js"'>
+  URL at which the generated Service Worker script is served.
+</ParamField>
+
+<ParamField path="wispPath" type="string" default='"/wisp/"'>
+  URL prefix for the Wisp WebSocket endpoint. All WebSocket upgrade requests
+  under this prefix are handled by `routeUpgrade`.
+</ParamField>
+
+<ParamField path="scramjetBundlePath" type="string" default='"/scram/scramjet.js"'>
+  URL for the core Scramjet JavaScript bundle.
+</ParamField>
+
+<ParamField path="scramjetWasmPath" type="string" default='"/scram/scramjet.wasm"'>
+  URL for the Scramjet WebAssembly binary.
+</ParamField>
+
+<ParamField path="scramjetUtilsBundlePath" type="string" default='"/scram/scramjet-utils.js"'>
+  URL for the scramjet-utils helper bundle.
+</ParamField>
+
+<ParamField path="scramjetControllerApiPath" type="string" default='"/controller/controller.api.js"'>
+  URL for the controller API script (loaded on the main thread).
+</ParamField>
+
+<ParamField path="scramjetControllerInjectPath" type="string" default='"/controller/controller.inject.js"'>
+  URL for the controller inject script (injected into proxied pages).
+</ParamField>
+
+<ParamField path="scramjetControllerSwPath" type="string" default='"/controller/controller.sw.js"'>
+  URL for the controller service-worker script (imported by `swPath`).
+</ParamField>
+
+<ParamField path="epoxyClientPath" type="string" default='"/clients/epoxy-client.js"'>
+  URL for the Epoxy transport client. Only relevant when `transport` is
+  `"epoxy"`.
+</ParamField>
+
+<ParamField path="libcurlClientPath" type="string" default='"/clients/libcurl-client.js"'>
+  URL for the libcurl transport client. Only relevant when `transport` is
+  `"libcurl"`.
+</ParamField>
+
+<ParamField path="bootstrapInitPath" type="string" default='"/bootstrap-init.js"'>
+  URL for the auto-generated bootstrap init script that exposes
+  `initBootstrap()` to the page.
+</ParamField>
+
+<ParamField path="scramjetVersionPin" type="string">
+  Pin the scramjet core package to a specific npm version string. Omit to
+  always use the latest compatible version.
+</ParamField>
+
+<ParamField path="scramjetControllerVersionPin" type="string">
+  Pin the scramjet-controller package to a specific version.
+</ParamField>
+
+<ParamField path="scramjetUtilsVersionPin" type="string">
+  Pin the scramjet-utils package to a specific version.
+</ParamField>
+
+<ParamField path="epoxyTransportVersionPin" type="string">
+  Pin the epoxy-transport package to a specific version.
+</ParamField>
+
+<ParamField path="libcurlTransportVersionPin" type="string">
+  Pin the libcurl-transport package to a specific version.
+</ParamField>
+
+---
+
+## Integration Examples
+
+<CodeGroup>
+
+```ts Express
+import express from 'express';
+import http from 'http';
+import { bootstrap } from '@mercuryworkshop/proxy-bootstrap';
+
+const app = express();
+const server = http.createServer(app);
+
+const { routeRequest, routeUpgrade } = await bootstrap({
+  transport: 'libcurl',
+});
+
+// Handle Scramjet routes before any Express middleware
+app.use((req, res, next) => {
+  if (!routeRequest(req, res)) {
+    next(); // not a Scramjet route — pass through
+  }
+});
+
+// Your normal application routes
+app.get('/', (req, res) => {
+  res.sendFile('index.html', { root: 'public' });
+});
+
+// WebSocket upgrade for the Wisp transport
+server.on('upgrade', (req, socket, head) => {
+  if (!routeUpgrade(req, socket, head)) {
+    socket.destroy(); // or hand off to your own WS server
+  }
+});
+
+server.listen(8080, () => {
+  console.log('Proxy running on http://localhost:8080');
+});
+```
+
+```ts Vanilla Node.js
+import http from 'http';
+import { bootstrap } from '@mercuryworkshop/proxy-bootstrap';
+
+const { routeRequest, routeUpgrade } = await bootstrap({
+  transport: 'libcurl',
+});
+
+const server = http.createServer((req, res) => {
+  // Let Scramjet handle its own routes
+  if (routeRequest(req, res)) return;
+
+  // Fall through to your application logic
+  res.writeHead(404);
+  res.end('Not found');
+});
+
+server.on('upgrade', (req, socket, head) => {
+  routeUpgrade(req, socket, head);
+});
+
+server.listen(8080);
+```
+
+</CodeGroup>
+
+---
+
+## `unpack()`
+
+```ts
+async function unpack(tarball: string, name: string): Promise<void>
+```
+
+Downloads an npm tarball URL and extracts it into the local `.downloads/` directory. Used internally by `bootstrap()` during package setup.
+
+<ParamField path="tarball" type="string" required>
+  A fully-qualified URL to an npm `.tgz` tarball (as found in the
+  `dist.tarball` field of an npm registry metadata response).
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  The local subdirectory name to extract into within `.downloads/`. For
+  example, passing `"scramjet"` extracts to `.downloads/scramjet/`.
+</ParamField>
+
+<Note>
+  `unpack()` is primarily an internal utility, but it is exported so you can
+  use it to fetch and cache additional npm packages alongside the standard
+  Scramjet bundle — for example, a custom transport or plugin package — using
+  the same mechanism as `bootstrap()`.
+</Note>
