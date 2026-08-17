@@ -1,7 +1,7 @@
 ---
-title: "Using Scramjet's Built-in Utility Plugins"
+title: "Scramjet Built-in Utility Plugins from scramjet-utils"
 sidebarTitle: "Built-in Plugins"
-description: "Explore the built-in Scramjet plugins from scramjet-utils: HttpCachePlugin, UrlWatcherPlugin, LinkHandlerPlugin, CatchEscapedLinksPlugin, and EventHandlerPlugin."
+description: "Explore built-in Scramjet plugins: HttpCachePlugin, UrlWatcherPlugin, LinkHandlerPlugin, CatchEscapedLinksPlugin, and EventHandlerPlugin."
 ---
 
 Scramjet ships a set of production-ready plugins in the `@mercuryworkshop/scramjet-utils` package. These plugins handle the most common proxy UX requirements — caching upstream responses, detecting URL changes, intercepting link clicks, and recovering from navigation escapes — so you don't have to implement them from scratch. All plugins follow the same `ManagedPlugin` contract and are installed through the standard `createFrame` API.
@@ -107,11 +107,15 @@ This is the recommended way to keep your proxy shell's address bar (or the brows
 ### Constructor
 
 ```ts
-new UrlWatcherPlugin(onUrlChange: (url: string) => void)
+new UrlWatcherPlugin(onUrlChange: (url: string) => void, options?: UrlWatcherOptions)
 ```
 
 <ParamField body="onUrlChange" type="(url: string) => void" required>
   Callback invoked with the new decoded URL string whenever the frame navigates.
+</ParamField>
+
+<ParamField body="options" type="UrlWatcherOptions">
+  Optional configuration object. Currently reserved for future use.
 </ParamField>
 
 ### Usage
@@ -141,11 +145,15 @@ Intercepts clicks on `<a>` elements inside the proxied frame so that links inten
 ### Constructor
 
 ```ts
-new LinkHandlerPlugin(onNewTab: (url: string) => void)
+new LinkHandlerPlugin(onNewTab: (url: string) => void, options?: LinkHandlerPluginOptions)
 ```
 
 <ParamField body="onNewTab" type="(url: string) => void" required>
   Callback invoked with the target URL whenever a link is clicked or middle-clicked. Open a new proxy tab, update the current frame, or handle it any way you like.
+</ParamField>
+
+<ParamField body="options" type="LinkHandlerPluginOptions">
+  Optional configuration object. Currently reserved for future use.
 </ParamField>
 
 ### Usage
@@ -202,7 +210,7 @@ const frame = controller.createFrame(iframe, {
 ```
 
 <Note>
-  `CatchEscapedLinksPlugin` runs its intercept hook **after** `HttpCachePlugin` (declared via `{ after: ['scramjet-http-cache'] }`), so cache lookups are not disrupted for normal same-frame navigations.
+  `CatchEscapedLinksPlugin` declares `{ after: ['scramjet-http-cache'] }` on its `fetch.intercept` tap, so if `HttpCachePlugin` is also installed it will run first on that hook.
 </Note>
 
 ---
@@ -219,8 +227,8 @@ This "always-last-bubble" guarantee is what makes `LinkHandlerPlugin` reliable: 
 new EventHandlerPlugin(options?: EventHandlerPluginOptions)
 ```
 
-<ParamField body="options.events" type="string[]" default="['click', 'auxclick', 'contextmenu']">
-  Bubble-phase event types to track. Add additional event names here if you need always-last behavior on other events.
+<ParamField body="options" type="EventHandlerPluginOptions">
+  Optional configuration object. Use `addEventToCapture(eventName)` on the plugin instance to register additional bubble-phase event types for always-last tracking.
 </ParamField>
 
 ### Usage

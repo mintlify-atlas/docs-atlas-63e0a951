@@ -8,7 +8,7 @@ A transport is the component responsible for making real network requests on beh
 
 ## Available Transports
 
-Scramjet ships with two production-ready transports, selected via the `transport` field in `BootstrapOptions`:
+Scramjet's `TransportOptions` type defines three values — `"epoxy"`, `"libcurl"`, and `"bare"` — selected via the `transport` field in `BootstrapOptions`. The first two are production-ready; `"bare"` is reserved but not yet implemented:
 
 <CardGroup cols={2}>
   <Card title="libcurl (default)" icon="bolt">
@@ -31,7 +31,7 @@ Scramjet ships with two production-ready transports, selected via the `transport
   </Card>
 </CardGroup>
 
-Both transports:
+Both epoxy and libcurl:
 - Connect to the Wisp WebSocket server at `wispPath` (default `/wisp/`)
 - Automatically resolve the Wisp URL from `location.protocol` and `location.host` at runtime (`ws://` for HTTP pages, `wss://` for HTTPS pages)
 - Support HTTP/2 multiplexing through the Wisp connection

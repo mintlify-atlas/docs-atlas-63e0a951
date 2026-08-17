@@ -117,7 +117,7 @@ Handles a WebSocket upgrade request for the Wisp transport server.
 
 ### Return value
 
-`true` if the upgrade was handled by Wisp, `false` if the URL does not start with `wispPath` and should be handled by your application.
+`true` if the upgrade was handled by Wisp, `false` if the URL does not start with `/wisp/` and should be handled by your application.
 
 <Warning>
   You **must** wire `routeUpgrade` to the `'upgrade'` event on your HTTP server.
@@ -179,9 +179,19 @@ All path options are served as static files by `routeRequest`. Change them only 
   `"libcurl"`.
 </ParamField>
 
+<ParamField path="bareClientPath" type="string" default='"/clients/bare-client.js"'>
+  URL for the Bare transport client. Only relevant when `transport` is
+  `"bare"`.
+</ParamField>
+
 <ParamField path="bootstrapInitPath" type="string" default='"/bootstrap-init.js"'>
   URL for the auto-generated bootstrap init script that exposes
   `initBootstrap()` to the page.
+</ParamField>
+
+<ParamField path="bootstrapApiPath" type="string">
+  URL for the bootstrap API script. No default is set; supply this path if your
+  setup serves the bootstrap API at a custom location.
 </ParamField>
 
 <ParamField path="scramjetVersionPin" type="string">
@@ -204,6 +214,46 @@ All path options are served as static files by `routeRequest`. Change them only 
 <ParamField path="libcurlTransportVersionPin" type="string">
   Pin the libcurl-transport package to a specific version.
 </ParamField>
+
+<ParamField path="bareTransportVersionPin" type="string">
+  Pin the bare-transport package to a specific version.
+</ParamField>
+
+---
+
+## `findLatestVersionOfPackage()`
+
+```ts
+async function findLatestVersionOfPackage(
+  packageName: string,
+  majorVersion: string
+): Promise<NodePackageMeta>
+```
+
+Queries the npm registry for the latest published version of `packageName` within the given `majorVersion` prefix, and returns the full registry metadata for that version. Used internally by `bootstrap()` when resolving which versions of each Scramjet package to download.
+
+<ParamField path="packageName" type="string" required>
+  The full npm package name to look up, e.g. `"@mercuryworkshop/scramjet-controller"`.
+</ParamField>
+
+<ParamField path="majorVersion" type="string" required>
+  The major version prefix to filter by, e.g. `"0"`. Only versions whose stringified form starts with `"<majorVersion>."` are considered.
+</ParamField>
+
+### Return value
+
+A `NodePackageMeta` object from the npm registry containing at minimum:
+
+- **`name`** — the package name.
+- **`version`** — the resolved latest version string.
+- **`dist.tarball`** — a fully-qualified URL to the `.tgz` tarball, suitable for passing to `unpack()`.
+- **`dependencies`** — the package's declared runtime dependencies.
+
+<Note>
+  `findLatestVersionOfPackage` is exported so you can resolve the latest
+  compatible version of any npm package yourself — for example, to download a
+  custom transport alongside the standard Scramjet bundle.
+</Note>
 
 ---
 

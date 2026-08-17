@@ -90,44 +90,19 @@ A global function injected into the page by including `bootstrap-init.js`. Perfo
 async function init(cfg: BootstrapOptions): Promise<Controller>
 ```
 
-The underlying function that `initBootstrap()` delegates to. Available from `@mercuryworkshop/proxy-bootstrap/client` for scenarios where you are bundling your own client code and do not want to rely on the auto-generated global.
+The underlying function that `initBootstrap()` delegates to. It is compiled into the `bootstrap-client.js` bundle that the server inlines into `bootstrap-init.js` as a base64 data URL — there is no separate `/client` subpath export from the `@mercuryworkshop/proxy-bootstrap` npm package. If you need to call `init()` directly (for example, when writing your own server integration), you should copy and adapt the logic from `src/client.ts` rather than importing it as a named subpath.
 
 <ParamField path="cfg" type="BootstrapOptions" required>
   The full bootstrap configuration object. When called via `initBootstrap()`,
   the server serializes its current configuration into the generated script so
-  this is filled in automatically. When calling `init()` directly from a
-  bundled module, you must supply the configuration yourself, ensuring the
-  paths match what your server is actually serving.
+  this is filled in automatically. When calling `init()` directly, you must
+  supply the configuration yourself, ensuring the paths match what your server
+  is actually serving.
 </ParamField>
 
 ### Return value
 
 `Promise<Controller>` — same as `initBootstrap()`.
-
-### Custom bundling example
-
-```ts
-import { init } from '@mercuryworkshop/proxy-bootstrap/client';
-
-const controller = await init({
-  transport: 'libcurl',
-  swPath: '/sw.js',
-  wispPath: '/wisp/',
-  scramjetBundlePath: '/scram/scramjet.js',
-  scramjetWasmPath: '/scram/scramjet.wasm',
-  scramjetUtilsBundlePath: '/scram/scramjet-utils.js',
-  scramjetControllerApiPath: '/controller/controller.api.js',
-  scramjetControllerInjectPath: '/controller/controller.inject.js',
-  scramjetControllerSwPath: '/controller/controller.sw.js',
-  libcurlClientPath: '/clients/libcurl-client.js',
-  epoxyClientPath: '/clients/epoxy-client.js',
-  bareClientPath: '/clients/bare-client.js',
-  bootstrapInitPath: '/bootstrap-init.js',
-  bootstrapApiPath: '/bootstrap-api.js',
-});
-
-await controller.wait();
-```
 
 ---
 
@@ -140,7 +115,7 @@ async function loadRest(
 ): Promise<Controller>
 ```
 
-A lower-level entry point for when you have already registered the service worker yourself and only need to load the Scramjet scripts and create the transport and controller.
+A lower-level entry point for when you have already registered the service worker yourself and only need to load the Scramjet scripts and create the transport and controller. Like `init()`, `loadRest()` is part of the bundled client code inlined into `bootstrap-init.js` — it is not separately importable as a named subpath of the npm package.
 
 <ParamField path="sw" type="ServiceWorker" required>
   An already-registered and active `ServiceWorker` instance. Obtain this from
@@ -164,40 +139,6 @@ A lower-level entry point for when you have already registered the service worke
 5. Constructs the transport, pointing it at the Wisp endpoint derived from `cfg.wispPath`.
 6. Configures the controller with the correct path overrides from `cfg`.
 7. Instantiates and returns a `Controller`.
-
-### Example — custom service worker registration
-
-```ts
-import { loadRest } from '@mercuryworkshop/proxy-bootstrap/client';
-
-// Register the SW yourself, with custom options
-const registration = await navigator.serviceWorker.register('/sw.js', {
-  scope: '/',
-  updateViaCache: 'none',
-});
-
-await navigator.serviceWorker.ready;
-const sw = registration.active!;
-
-const controller = await loadRest(sw, {
-  transport: 'libcurl',
-  swPath: '/sw.js',
-  wispPath: '/wisp/',
-  scramjetBundlePath: '/scram/scramjet.js',
-  scramjetWasmPath: '/scram/scramjet.wasm',
-  scramjetUtilsBundlePath: '/scram/scramjet-utils.js',
-  scramjetControllerApiPath: '/controller/controller.api.js',
-  scramjetControllerInjectPath: '/controller/controller.inject.js',
-  scramjetControllerSwPath: '/controller/controller.sw.js',
-  libcurlClientPath: '/clients/libcurl-client.js',
-  epoxyClientPath: '/clients/epoxy-client.js',
-  bareClientPath: '/clients/bare-client.js',
-  bootstrapInitPath: '/bootstrap-init.js',
-  bootstrapApiPath: '/bootstrap-api.js',
-});
-
-await controller.wait();
-```
 
 ---
 

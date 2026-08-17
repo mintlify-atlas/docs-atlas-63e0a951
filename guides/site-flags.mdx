@@ -1,7 +1,7 @@
 ---
-title: 'Scramjet Feature Flags and Per-Site Configuration'
+title: 'Scramjet Feature Flags and Per-Site Flag Overrides'
 sidebarTitle: 'Site Flags'
-description: 'Enable or disable Scramjet rewriter features globally with ScramjetFlags, or override them per URL pattern using siteFlags for site-specific compatibility fixes.'
+description: 'Enable or disable Scramjet rewriter features globally with ScramjetFlags, or override flags per URL pattern using siteFlags for site-specific fixes.'
 ---
 
 Scramjet's rewriter is highly configurable through a boolean flag system. Every flag in `ScramjetFlags` maps to a distinct rewriter behavior — from source map generation and destructuring rewrites to synchronous XHR support and worker encapsulation. Global flags apply to every proxied page; `siteFlags` lets you surgically override any subset of flags for URLs that match a regex pattern. This two-level system means you can enable conservative production defaults globally while unlocking site-specific quirks only where they are needed.
@@ -109,7 +109,7 @@ export function flagEnabled(
   const value = context.config.flags[flag];
   for (const regex in context.config.siteFlags) {
     const partialflags = context.config.siteFlags[regex];
-    if (new RegExp(regex).test(url.href) && flag in partialflags) {
+    if (new _RegExp(regex).test(url.href) && flag in partialflags) {
       return partialflags[flag];
     }
   }

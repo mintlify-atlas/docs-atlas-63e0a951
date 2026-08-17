@@ -1,5 +1,5 @@
 ---
-title: "scramjet-utils Plugin API Reference"
+title: "scramjet-utils Plugins and Utilities API Reference"
 sidebarTitle: "Utils Plugins"
 description: "Complete API reference for all plugins and utilities exported from @mercuryworkshop/scramjet-utils including HttpCachePlugin, UrlWatcherPlugin, and more."
 ---
@@ -271,11 +271,7 @@ new EventHandlerPlugin(options?: EventHandlerPluginOptions)
 ```
 
 <ParamField body="options" type="EventHandlerPluginOptions" optional>
-  <Expandable title="EventHandlerPluginOptions">
-    <ParamField body="events" type="string[]" optional>
-      Array of bubble-phase event type names to track. Defaults to `['click', 'auxclick', 'contextmenu']`. Add additional event names here if you need guaranteed-last delivery for other event types.
-    </ParamField>
-  </Expandable>
+  Reserved for future configuration. Pass `{}` or omit entirely. To register event types for tracking, call `addEventToCapture()` after construction.
 </ParamField>
 
 ### Methods
@@ -295,7 +291,7 @@ eventHandlerPlugin.addEventListener(anchorElement, 'click', (e: MouseEvent) => {
 </ParamField>
 
 <ParamField body="eventName" type="string" required>
-  The event type string (e.g. `'click'`). Must be one of the event types being tracked by this plugin instance (see `options.events`).
+  The event type string (e.g. `'click'`). Must be one of the event types being tracked by this plugin instance (registered via `addEventToCapture()`).
 </ParamField>
 
 <ParamField body="listener" type="(e: T) => void" required>

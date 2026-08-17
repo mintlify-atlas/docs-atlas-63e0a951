@@ -1,5 +1,5 @@
 ---
-title: "Integrating Scramjet into Your Web Application"
+title: "Integrating Scramjet into Your Frontend Application"
 sidebarTitle: "Client Setup"
 description: "Register the Scramjet service worker, initialize the Controller, create a proxied Frame, and navigate to URLs through Scramjet in your web app."
 ---
@@ -10,11 +10,11 @@ Scramjet's client-side integration is intentionally minimal: include a single ge
 
 When your page calls `initBootstrap()`, the following happens under the hood:
 
-1. The service worker at `swPath` is registered via `navigator.serviceWorker.register()`.
-2. An `init-bootstrap` message is posted to the SW with the full `BootstrapOptions` config.
-3. The SW downloads and caches all required assets (scramjet bundle, WASM, controller scripts, transport client) from jsDelivr CDN into IndexedDB.
-4. Once assets are cached, the SW loads the scramjet controller SW script by evaluating it directly, then broadcasts `init-bootstrap-done` back to the page.
-5. The `loadRest()` function on the page loads the scramjet bundle, controller API, and utils scripts, instantiates the chosen transport client, and returns a new `Controller`.
+1. The service worker at `swPath` is registered via `navigator.serviceWorker.register()`, returning the active `ServiceWorker` instance.
+2. `loadRest()` is called with the service worker and the `BootstrapOptions` config.
+3. The scramjet bundle, controller API script, and utils bundle are loaded into the page via `<script>` tags.
+4. The chosen transport client script is loaded and instantiated (e.g. `EpoxyClient` or `LibcurlClient`) with the Wisp WebSocket URL derived from the current page's `location`.
+5. A `Controller` is constructed with the service worker, transport, and resolved config, then returned.
 
 ## Step-by-Step Setup
 
@@ -155,7 +155,7 @@ The `Controller` exposes two distinct config objects:
 When using `initBootstrap()`, both configs are set from the `BootstrapOptions` passed by the server. You can still construct the `Controller` manually if you need full control:
 
 ```js
-import { Controller, config as defaultControllerConfig } from '@mercuryworkshop/scramjet-controller';
+import { Controller } from '@mercuryworkshop/scramjet-controller';
 
 const controller = new Controller({
   serviceworker: sw,

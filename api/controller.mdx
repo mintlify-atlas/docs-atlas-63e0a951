@@ -1,5 +1,5 @@
 ---
-title: "Controller — Scramjet Proxy Orchestrator API"
+title: "Scramjet Controller API — Proxy Session Orchestrator"
 sidebarTitle: "Controller"
 description: "API reference for the Controller class: constructor options, createFrame(), wait(), setTransport(), and the config and scramjetConfig properties."
 ---
@@ -131,7 +131,7 @@ console.log('Controller ready, prefix:', controller.prefix);
 </ResponseField>
 
 <ResponseField name="isReady" type="boolean">
-  `true` once the controller's internal `ready` promise has resolved — meaning the service worker has acknowledged the controller's registration and the WASM binary has been fetched. Check this flag to determine readiness synchronously; for async code prefer `await controller.wait()`.
+  A public boolean flag initialized to `false`. In the current implementation this field is not updated by the controller after construction — use `await controller.wait()` to determine readiness rather than polling this property.
 </ResponseField>
 
 <ResponseField name="transport" type="ProxyTransport">

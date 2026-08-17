@@ -94,11 +94,11 @@ The rewriter handles four content types:
     | Global | Purpose |
     |---|---|
     | `$scramjet$wrap(target)` | Wraps an object so property accesses are intercepted |
-    | `$scramjet$prop(obj, key)` | Intercepts a single property get (used for computed keys) |
-    | `$scramjet$rewrite(url)` | Encodes a bare URL string into a proxied URL |
-    | `$scramjet$meta` | Exposes the current frame's base URL, prefix, and codec |
-    | `$scramjet$import(url)` | Rewrites dynamic `import()` calls |
-    | `$scramjet$clean(obj, ...rest)` | Cleans rest-spread destructures that contain intercepted keys |
+    | `$scramjet$prop(key)` | Maps a property name to its intercepted alias (e.g. `"location"` → `"$scramjet__location"`) for computed property accesses |
+    | `$scramjet$rewrite(js)` | Rewrites a JS string for direct `eval()` calls so the evaluated code is proxied |
+    | `$scramjet$meta` | Rewrites `import.meta` accesses, supplying the proxied `url` and a `resolve()` function |
+    | `$scramjet$import(base, url)` | Rewrites dynamic `import()` calls by resolving `url` against `base` and encoding it |
+    | `$scramjet$clean(restid)` | Cleans up rest-spread destructure temporaries that may contain intercepted property names |
 
     Source maps can be generated and stored (controlled by the `sourcemaps` flag) so that browser DevTools show original line numbers.
   </Tab>

@@ -1,5 +1,5 @@
 ---
-title: "Setting Up the Scramjet Proxy Server"
+title: "Setting Up the Scramjet Proxy Server with Bootstrap"
 sidebarTitle: "Server Setup"
 description: "Configure a Node.js HTTP server to serve Scramjet assets and proxy WebSocket upgrades using the proxy-bootstrap package and the bootstrap() function."
 ---
@@ -37,8 +37,8 @@ Every field in `BootstrapOptions` is optional — the defaults shown below work 
 
 ### Core Options
 
-<ParamField path="transport" type='"epoxy" | "libcurl"' default='"libcurl"'>
-  Selects which transport client is downloaded and served to the browser. `"libcurl"` uses a libcurl WASM build; `"epoxy"` uses a Rust-based transport. Both tunnel traffic through Wisp WebSockets.
+<ParamField path="transport" type='"epoxy" | "libcurl" | "bare"' default='"libcurl"'>
+  Selects which transport client is downloaded and served to the browser. `"libcurl"` uses a libcurl WASM build; `"epoxy"` uses a Rust-based transport. Both tunnel traffic through Wisp WebSockets. `"bare"` is defined as a valid option but is not yet implemented — passing it will throw at runtime.
 </ParamField>
 
 <ParamField path="swPath" type="string" default='"/sw.js"'>
@@ -91,7 +91,11 @@ Every field in `BootstrapOptions` is optional — the defaults shown below work 
   URL path reserved for the Bare transport client. The Bare transport is not yet fully implemented.
 </ParamField>
 
-### Bootstrap Init Path
+### Bootstrap Paths
+
+<ParamField path="bootstrapApiPath" type="string">
+  URL path for the bootstrap API endpoint. This field is part of `BootstrapOptions` but has no default set — it is reserved for advanced use cases.
+</ParamField>
 
 <ParamField path="bootstrapInitPath" type="string" default='"/bootstrap-init.js"'>
   URL path for the dynamically-generated bootstrap init script. This script exposes `initBootstrap()` to your page, which registers the service worker and returns a `Controller`. Include it via a `<script>` tag or dynamic import in your front-end.
@@ -119,6 +123,10 @@ All version pins are optional. When omitted, `bootstrap()` resolves the latest p
 
 <ParamField path="libcurlTransportVersionPin" type="string">
   Exact version pin for `@mercuryworkshop/libcurl-transport`.
+</ParamField>
+
+<ParamField path="bareTransportVersionPin" type="string">
+  Exact version pin for the Bare transport package. Reserved for when the Bare transport is fully implemented.
 </ParamField>
 
 ## Routing Helpers

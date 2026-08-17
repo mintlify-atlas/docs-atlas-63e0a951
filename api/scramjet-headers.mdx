@@ -1,7 +1,7 @@
 ---
-title: "ScramjetHeaders — HTTP Header Manipulation API"
+title: "ScramjetHeaders — HTTP Header Manipulation Reference"
 sidebarTitle: "ScramjetHeaders"
-description: "API reference for ScramjetHeaders, a case-insensitive HTTP header container used throughout Scramjet's fetch pipeline for rewriting request and response headers."
+description: "API reference for ScramjetHeaders, a case-insensitive HTTP header container used in Scramjet's fetch pipeline for rewriting request and response headers."
 ---
 
 `ScramjetHeaders` is the HTTP header container used throughout Scramjet's fetch pipeline. It stores all header names in lowercase, so every read and write operation is inherently case-insensitive — `get('Content-Type')` and `get('content-type')` return the same value. Unlike the native browser `Headers` class, `ScramjetHeaders` is backed by a plain object and does not combine or deduplicate multiple values for the same name; the last writer wins, keeping the implementation simple and deterministic for rewriting purposes.
